@@ -95,6 +95,8 @@ new MutationObserver(() => {
 }).observe($('#main'), { childList: true, subtree: true });
 
 (async () => {
+  // Register first, so the app is cached for offline use even before the welcome sheet is dismissed.
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').then(watchUpdates).catch(e => console.warn('SW', e));
   await seedIfEmpty();
   navigator.storage?.persist?.().catch(() => {});
   addEventListener('hashchange', show);
@@ -104,5 +106,4 @@ new MutationObserver(() => {
   await w.done;
   startSyncLoop();
   snapshotIfStale().catch(e => console.warn('snapshot', e));
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').then(watchUpdates).catch(e => console.warn('SW', e));
 })();
