@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+<rect width="512" height="512" fill="#fbf6e9"/>
+<circle cx="256" cy="290" r="170" fill="#d9443a"/>
+<ellipse cx="205" cy="225" rx="38" ry="20" fill="#fff" opacity=".25" transform="rotate(-35 205 225)"/>
+<path d="M256 135 L215 95 L245 118 L256 70 L267 118 L297 95 Z" fill="#3a8f3a"/>
+<path d="M256 135 c-45 -30 -90 -8 -100 20 c40 10 75 0 100 -20z M256 135 c45 -30 90 -8 100 20 c-40 10 -75 0 -100 -20z" fill="#3a8f3a"/>
+<text x="256" y="350" font-family="Arial Rounded MT Bold, Helvetica, Arial, sans-serif" font-weight="900" font-size="150" text-anchor="middle" fill="#fff">MC</text>
+</svg>
