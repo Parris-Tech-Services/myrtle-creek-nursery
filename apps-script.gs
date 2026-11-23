@@ -9,11 +9,11 @@
  *   readable tabs    Sales, Market days, ... for sorting, filtering and pivot tables. Column A holds a hidden row id.
  * Every record is an upsert. An older copy never overwrites a newer one (updatedAt decides).
  *
- * Requests: POST {key, action:'push', tabs, items}  -> {ok, acked:[keys], migrated, scriptVersion}
+ * Requests: POST {key, action:'push', tabs, items}  -> {ok, acked:[keys], scriptVersion}
  *           GET  ?key=..&action=ping|counts|export&store=..&offset=..&limit=..
  *           GET  (no parameters) -> friendly page with the connection code (until the app has connected once)
  */
-const SCRIPT_VERSION = 2;   // the app checks this. Raise it whenever the script changes in a way the app depends on.
+const SCRIPT_VERSION = 1;   // the app checks this. Raise it whenever the script changes in a way the app depends on.
 const STORES = ['sales', 'marketDays', 'cashMovements', 'orders', 'losses', 'soldOut', 'stock', 'dayStock', 'batches', 'products', 'types', 'groups', 'locations', 'packing', 'settings'];
 const DATA_TAB = '_data';
 const START_TAB = 'Start here';
@@ -46,9 +46,8 @@ function doPost(e) {
     if (data.action !== 'push') return json_({ ok: false, error: 'Unknown action' });
     const ss = SpreadsheetApp.getActiveSpreadsheet();
     startHere_(ss);
-    const migrated = migrate_(ss);
     const acked = push_(ss, data.tabs || {}, data.items || []);
-    return json_({ ok: true, acked: acked, migrated: migrated, scriptVersion: SCRIPT_VERSION });
+    return json_({ ok: true, acked: acked, scriptVersion: SCRIPT_VERSION });
   } catch (err) {
     return json_({ ok: false, error: String(err), scriptVersion: SCRIPT_VERSION });
   } finally { lock.releaseLock(); }
@@ -193,10 +192,9 @@ function tab_(ss, cache, name, defs) {
     sh.hideColumns(1);
     sh.getRange(1, 1, Math.max(2, sh.getMaxRows()), header.length).createFilter();
   }
-  const width = sh.getLastColumn();
   const idx = {};
   if (sh.getLastRow() > 1) sh.getRange(2, 1, sh.getLastRow() - 1, 1).getValues().forEach(function (r, i) { idx[String(r[0])] = i + 2; });
-  cache[name] = { sh: sh, cols: cols || [], idx: idx, fresh: [], del: [], created: created, width: width };
+  cache[name] = { sh: sh, cols: cols || [], idx: idx, fresh: [], del: [], created: created };
   return cache[name];
 }
 
@@ -260,29 +258,6 @@ function arrange_(ss) {
   if (data) { ss.setActiveSheet(data); ss.moveActiveSheet(ss.getNumSheets()); }
   const first = ss.getSheetByName(START_TAB);
   if (first) ss.setActiveSheet(first);
-}
-
-/** Old format (one tab per store with a json column): move the data into _data, delete the old tab. The app then resends the readable rows. */
-function migrate_(ss) {
-  let moved = false;
-  const old = {};
-  STORES.concat(['cashCounts']).forEach(function (s) { old[s.charAt(0).toUpperCase() + s.slice(1)] = s; });
-  ss.getSheets().forEach(function (sh) {
-    const store = old[sh.getName()];
-    if (!store || sh.getLastColumn() < 3 || sh.getLastRow() < 1) return;
-    const header = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
-    if (String(header[header.length - 1]) !== 'json') return;
-    if (STORES.indexOf(store) >= 0 && sh.getLastRow() > 1) {
-      const data = dataSheet_(ss), have = {};
-      dataRows_(ss).forEach(function (r) { have[r[0] + '|' + r[1]] = true; });
-      const out = sh.getRange(2, 1, sh.getLastRow() - 1, header.length).getValues()
-        .filter(function (r) { return r[0] !== '' && r[header.length - 1] && !have[store + '|' + r[0]]; })
-        .map(function (r) { return [store, String(r[0]), Number(r[1]) || 0, r[header.length - 1]]; });
-      if (out.length) data.getRange(data.getLastRow() + 1, 1, out.length, 4).setValues(out);
-    }
-    ss.deleteSheet(sh); moved = true;
-  });
-  return moved;
 }
 
 function export_(ss, store, offset, limit) {

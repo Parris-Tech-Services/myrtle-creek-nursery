@@ -11,7 +11,7 @@ export function orderTotals(lines, dealsByGroup, groupOf, deliveryFee = 0) {
 export const paidTotal = o => sum(o.payments || [], p => p.amount);
 export const balance = o => Math.max(0, o.total - paidTotal(o));
 export const paymentStatus = o => { const p = paidTotal(o); return p <= 0 ? 'unpaid' : p >= o.total ? 'paid' : 'part'; };
-export const isHeld = o => o.status === 'held';
+const isHeld = o => o.status === 'held';
 
 /** Units reserved by held orders, optionally only those for one market location. */
 export function reservedByProduct(orders, locationId = null) {

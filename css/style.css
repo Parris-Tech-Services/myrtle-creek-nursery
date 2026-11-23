@@ -4,7 +4,7 @@
 --paper:#f7f3ea;--card:#fffdf8;--ink:#2b2a26;--muted:#5b574c;--line:#d8d0bb;--edge:#7d7664;
 --olive:#3d5a2a;--on-olive:#ffffff;--olive-text:#3d5a2a;--brick:#9c3a2d;--on-brick:#ffffff;--soil:#6b4a2f;
 --sage-bg:#e5ebd9;--straw-bg:#f3e9c9;--banner-ink:#3d2f0f;
---tint-out:#e9e5da;
+--soldout-bg:#e9e5da;
 --nav-bg:#efe9da;--nav-ink:#2b2a26;--nav-on-bg:#3d5a2a;--nav-on-ink:#ffffff;
 --tag-bg:#ece5d2;--tag-ok-bg:#dfe8d0;--tag-ok-ink:#2f4a20;--tag-bad-bg:#f3dcd6;--tag-bad-ink:#7c2b21;
 --focus:#2b2a26;--toast-bg:#2b2a26;--toast-ink:#ffffff;--toast-btn-bg:#e8dcb8;--toast-btn-ink:#2b2a26;
@@ -14,7 +14,7 @@
 --paper:#1d1b17;--card:#27241f;--ink:#efe9db;--muted:#b8b09c;--line:#3d382d;--edge:#8f8670;
 --olive:#9cc27d;--on-olive:#14210c;--olive-text:#a9cf8c;--brick:#e58a7c;--on-brick:#1d1b17;--soil:#d1ab7c;
 --sage-bg:#2f3a27;--straw-bg:#4a3d17;--banner-ink:#f6e6b0;
---tint-out:#35312a;
+--soldout-bg:#35312a;
 --nav-bg:#2b2822;--nav-ink:#efe9db;--nav-on-bg:#9cc27d;--nav-on-ink:#14210c;
 --tag-bg:#38332a;--tag-ok-bg:#2f3f26;--tag-ok-ink:#cfe6b9;--tag-bad-bg:#4a2a25;--tag-bad-ink:#f4c9c0;
 --focus:#f1e7c9;--toast-bg:#efe9db;--toast-ink:#1d1b17;--toast-btn-bg:#3d5a2a;--toast-btn-ink:#ffffff;
@@ -80,7 +80,7 @@ table.t{width:100%;border-collapse:collapse;font-size:.95rem}.t th,.t td{padding
 .tile.g-seedling{border-left-color:var(--brick)}.tile.g-punnet{border-left-color:var(--olive-text)}.tile.g-tree{border-left-color:var(--soil)}
 .tile.low .left{color:var(--brick);font-weight:700}
 .tile.flash{background:var(--sage-bg)}
-.tile.out{background:var(--tint-out)}.tile.out::after{content:"SOLD OUT";position:absolute;right:6px;top:4px;font-size:.65rem;font-weight:700;color:var(--brick)}
+.tile.out{background:var(--soldout-bg)}.tile.out::after{content:"SOLD OUT";position:absolute;right:6px;top:4px;font-size:.65rem;font-weight:700;color:var(--brick)}
 .tile:active{filter:brightness(.94)}
 .badge{position:absolute;top:-8px;right:-6px;background:var(--olive);color:var(--on-olive);border:2px solid var(--card);border-radius:6px;min-width:30px;height:30px;display:flex;align-items:center;justify-content:center;font-weight:700;font-style:normal;padding:0 6px}
 .badge[hidden]{display:none}
@@ -131,7 +131,6 @@ input.priceinput{width:96px;min-height:44px;text-align:right;font-weight:700}
 .dealrow{display:flex;gap:8px;align-items:center;margin:6px 0}.dealrow input{width:90px}.example{background:var(--sage-bg);border-radius:6px;padding:8px 10px;font-variant-numeric:tabular-nums}
 @media (min-width:900px){
   body{padding-left:176px}
-  .toast-fix{}
   nav{top:0;bottom:0;right:auto;width:176px;flex-direction:column;border-top:0;border-right:1px solid var(--edge);padding:14px 8px;overflow:auto}
   nav a,nav a.sec{display:flex;justify-content:flex-start;padding:8px 14px}nav .more{display:none}
   main{padding-bottom:12px}

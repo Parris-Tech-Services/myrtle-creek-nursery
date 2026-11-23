@@ -4,8 +4,8 @@ import { STORES, SYNCED_SETTINGS, idOf, pendingOps, batch, applyAcks, backoffMs,
 import { takeSnapshot, cashRow } from './sync.js';
 import { rowsFor, tabDefs, TABS_OF_STORE } from './sheetmap.js';
 
-/** The Sheet's script must be at least this version for the app's sync to work (see apps-script.gs SCRIPT_VERSION). */
-export const REQUIRED_SCRIPT_VERSION = 2;
+/** The Sheet's script must be at least this version for the app's sync to work (see SCRIPT_VERSION in apps-script.gs). */
+const REQUIRED_SCRIPT_VERSION = 1;
 const status = { error: null, failures: 0, nextTry: 0, busy: false, pending: 0, scriptVersion: undefined };
 export const syncStatus = status;
 const notify = () => window.dispatchEvent(new Event('syncchange'));
@@ -19,7 +19,6 @@ async function liveRecords() {
 }
 const stateMap = async () => Object.fromEntries((await db.syncState.toArray()).map(r => [r.id, r]));
 export async function pending() { return pendingOps(await liveRecords(), await stateMap()); }
-export async function isAcked(store, rec) { const s = await db.syncState.get(store + ':' + idOf(store, rec)); return !!s && s.acked >= (rec.updatedAt || 0); }
 export async function ackedSet() { const m = await stateMap(); return (store, rec) => (m[store + ':' + idOf(store, rec)]?.acked ?? -1) >= (rec.updatedAt || 0); }
 
 // What the readable Sheet tabs look like lives in sheetmap.js. Restore data always goes in _data as the full json record.
@@ -68,7 +67,6 @@ export async function flush({ force = false } = {}) {
     for (const group of batch(await pending(), 50)) {
       const { items, tabs } = await buildItems(group);
       const r = await call(conn, { action: 'push', tabs, items });
-      if (r.migrated && !flush.retried) { flush.retried = true; await db.syncState.clear(); status.busy = false; const again = await flush({ force: true }); flush.retried = false; return again; }
       const rows = applyAcks(group, r.acked);
       await db.syncState.bulkPut(rows);
       sent += rows.length;

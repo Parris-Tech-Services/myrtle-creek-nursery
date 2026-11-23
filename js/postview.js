@@ -1,8 +1,8 @@
-import { db, catalog, packingPlan, nurseryStock, getSetting, setSetting, markets, NURSERY } from './db.js';
+import { db, catalog, packingPlan, nurseryStock, getSetting, setSetting, markets } from './db.js';
 import { reservedByProduct } from './orders.js';
 import { buildPost, DEFAULTS } from './post.js';
 import { overlay, toast } from './ui.js';
-import { esc, ymd, $ } from './util.js';
+import { esc, ymd } from './util.js';
 
 /** What is going: packing-list quantities above zero, or nursery stock not held for orders if no packing list exists. */
 async function goingFor(locId) {

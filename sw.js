@@ -1,5 +1,5 @@
 // Cache-first service worker. Bump VERSION whenever any app file changes.
-const VERSION = 'mcn-v19';
+const VERSION = 'mcn-v20';
 const FILES = [
   './',
   'index.html',

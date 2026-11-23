@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { pendingOps, batch, applyAcks, backoffMs, mergeRecords, encodeConnection, decodeConnection, backupOverdue, chipState } from '../js/syncing.js';
+import { pendingOps, batch, applyAcks, backoffMs, mergeRecords, decodeConnection, backupOverdue, chipState } from '../js/syncing.js';
+
+const encodeConnection = (url, key) => btoa(JSON.stringify({ u: url, k: key }));
 
 const live = { sales: [{ id: 'a', updatedAt: 10 }, { id: 'b', updatedAt: 20 }], settings: [{ key: 'lastFloat', updatedAt: 5 }] };
 

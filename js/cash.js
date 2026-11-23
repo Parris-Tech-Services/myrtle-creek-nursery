@@ -22,9 +22,6 @@ export function breakdown(amount, available = null) {
 export const diffCounts = (before, after) => { before ||= {}; after ||= {}; return DENOMS.filter(d => before[d] || after[d])
   .map(d => ({ denom: d, before: before[d] || 0, after: after[d] || 0, change: (after[d] || 0) - (before[d] || 0), value: ((after[d] || 0) - (before[d] || 0)) * d })); };
 
-/** Expected cash in the float at close. */
-export const expectedCash = ({ float, extraFloat = 0, cashIn = 0, cashOut = 0, cashRepaid = 0 }) => float + extraFloat + cashIn + cashRepaid - cashOut;
-
 // ---- change calculator -------------------------------------------------------
 /** Australian cash rounding: the CASH amount goes to the nearest 5c (1-2c down, 3-4c up). Card and transfer are never rounded. */
 export const roundCash5 = c => Math.round(c / 5) * 5;

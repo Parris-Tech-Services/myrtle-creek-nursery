@@ -1,6 +1,6 @@
 import { db, catalog, adjustStock, nurseryStock } from './db.js';
-import { esc, uid, ymd, fmtDate, groupBy, $ } from './util.js';
-import { askForm, toast, undoToast } from './ui.js';
+import { esc, uid, ymd, fmtDate, groupBy } from './util.js';
+import { askForm, undoToast } from './ui.js';
 import { reservedByProduct } from './orders.js';
 import { recordLoss } from './market.js';
 

@@ -64,7 +64,7 @@ test('market day also feeds Cash counts (expected vs counted, denominations)', (
 test('tabs only for the readable stores; people replace the whole tab', () => {
   for (const s of ['types', 'locations', 'packing']) assert.deepEqual(rowsFor(s, { id: 'x', name: 'n', qty: 1 }, ctx).rows, []);
   assert.deepEqual(rowsFor('settings', { key: 'lastFloat', value: 5 }, ctx).rows, []);
-  const p = rowsFor('settings', { key: 'staffNames', value: [{ name: 'Luca Dorrough' }, { name: 'Ysis De Gans', hidden: true }, 'Sam'] }, ctx);
+  const p = rowsFor('settings', { key: 'staffNames', value: [{ name: 'Luca Dorrough' }, { name: 'Ysis De Gans', hidden: true }, { name: 'Sam' }] }, ctx);
   assert.deepEqual(p.replaceTabs, ['People']);
   assert.deepEqual(p.rows.map(r => r.cells), [['Luca Dorrough', 'Yes'], ['Ysis De Gans', ''], ['Sam', 'Yes']]);
   assert.deepEqual(TABS_OF_STORE.marketDays, ['Market days', 'Cash counts']);

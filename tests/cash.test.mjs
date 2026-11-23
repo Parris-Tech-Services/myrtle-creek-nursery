@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { countTotal, breakdown, diffCounts, expectedCash } from '../js/cash.js';
+import { countTotal, breakdown, diffCounts } from '../js/cash.js';
 
 test('count total', () => assert.equal(countTotal({ 5000: 1, 2000: 2, 100: 3, 5: 1 }), 5000 + 4000 + 300 + 5));
 test('breakdown of a float uses what was counted first', () => {
@@ -13,7 +13,6 @@ test('diff table', () => {
   const d = diffCounts({ 2000: 2, 100: 10 }, { 2000: 5, 50: 4 });
   assert.deepEqual(d.map(r => [r.denom, r.before, r.after, r.change]), [[2000, 2, 5, 3], [100, 10, 0, -10], [50, 0, 4, 4]]);
 });
-test('expected cash', () => assert.equal(expectedCash({ float: 10000, cashIn: 25000, cashOut: 1500, cashRepaid: 500 }), 34000));
 
 import { roundCash5, settleCash, describeBreakdown, quickAmounts } from '../js/cash.js';
 test('5c cash rounding: 1-2c down, 3-4c up, 6-7c down, 8-9c up', () => {

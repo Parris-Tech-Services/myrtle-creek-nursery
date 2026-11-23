@@ -1,19 +1,19 @@
 import { db, catalog, openDay, adjustStock, markets, NURSERY } from './db.js';
 import { dealsFor, unitPriceFor } from './pricing.js';
-import { orderTotals, paidTotal, balance, paymentStatus, filterOrders, liability, reservedByProduct } from './orders.js';
+import { orderTotals, paidTotal, balance, paymentStatus, filterOrders, liability } from './orders.js';
 import { flush } from './gsync.js';
-import { esc, money, uid, ymd, fmtDate, sum, groupBy, $, $$ } from './util.js';
+import { esc, money, uid, ymd, fmtDate, groupBy, $, $$ } from './util.js';
 import { askForm, choose, toast, undoToast, overlay, confirmBox, stepperHtml, stepperClick } from './ui.js';
 
 const FUL = { market: 'Pickup at market', pambula: 'Pickup at Pambula', delivery: 'Drop-off / delivery' };
 const METHODS = [['cash', 'Cash'], ['card', 'Card'], ['transfer', 'Transfer / PayID']];
 
-export async function saveOrder(o) {
+async function saveOrder(o) {
   await db.transaction('rw', db.orders, async () => { await db.orders.put(o); });
   flush();
 }
 
-export async function takePayment(o, { amount, method, date = ymd() }) {
+async function takePayment(o, { amount, method, date = ymd() }) {
   const day = await openDay(); // counts toward the open day's cash/card/transfer reconciliation
   o.payments = [...(o.payments || []), { id: uid(), amount, method, date, ts: Date.now(), marketDayId: day?.id || null }];
   await saveOrder(o);
@@ -32,7 +32,7 @@ async function dayForCollection(o) {
 }
 
 /** Counts the units as sold on the collection day. Money was already counted when paid, so the sale carries no payments. */
-export async function collectOrder(o) {
+async function collectOrder(o) {
   if (balance(o) > 0) {
     const c = await choose(`Collect ${o.customer}'s order`, [['pay', `Take ${money(balance(o))} now, then collect`], ['owing', 'Collect without payment (balance stays owing)']], `They still owe ${money(balance(o))}. How do you want to settle it?`);
     if (!c) return false;
@@ -58,7 +58,7 @@ export async function collectOrder(o) {
   return true;
 }
 
-export async function uncollect(id) {
+async function uncollect(id) {
   const o = await db.orders.get(id);
   await db.transaction('rw', db.sales, db.orders, db.stock, async () => {
     await db.sales.update(o.collectedSaleId, { voided: true, voidedAt: Date.now() });

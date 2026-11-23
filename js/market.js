@@ -10,8 +10,7 @@ import { checklistCard, wireChecklist } from './checklist.js';
 
 let mode = 'main', viewDayId = null, endStep = 1;
 export const showReport = id => { mode = 'end'; viewDayId = id; endStep = 1; location.hash = '#market'; };
-export const WEATHER = [['sunny', 'Sunny'], ['hot', 'Hot'], ['rain', 'Rain'], ['wind', 'Windy'], ['cold', 'Cold']];
-const METHODS = [['cash', 'Cash'], ['card', 'Card'], ['transfer', 'Transfer / PayID']];
+const WEATHER = [['sunny', 'Sunny'], ['hot', 'Hot'], ['rain', 'Rain'], ['wind', 'Windy'], ['cold', 'Cold']];
 const EXPENSE = [['stallfee', 'Stall fee'], ['fuel', 'Fuel'], ['supplies', 'Supplies'], ['borrowed', 'Borrowed from the float (I will repay)'], ['other', 'Other']];
 const CATNAME = Object.fromEntries(EXPENSE);
 

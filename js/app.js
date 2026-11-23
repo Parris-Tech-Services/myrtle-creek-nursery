@@ -42,7 +42,7 @@ async function show() {
   try {
     await (await routes[r][1]()).render(main);
     main.insertAdjacentHTML('afterbegin', await banners());
-  } catch (e) { console.error(e); main.innerHTML = `<div class="card"><h2>Something went wrong</h2><pre>${esc(String(e.stack || e))}</pre></div>`; }
+  } catch (e) { main.innerHTML = `<div class="card"><h2>Something went wrong</h2><pre>${esc(String(e.stack || e))}</pre></div>`; }
   refreshPending().then(chip);
 }
 
@@ -96,7 +96,13 @@ new MutationObserver(() => {
 
 (async () => {
   // Register first, so the app is cached for offline use even before the welcome sheet is dismissed.
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').then(watchUpdates).catch(e => console.warn('SW', e));
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').then(watchUpdates).catch(() => {});
+  // There are no real users yet, so a database left by an older test build (a higher version than this one) is simply discarded.
+  // Once real data exists, never do this: change the schema with db.version(N + 1) and an upgrade instead (see db.js).
+  try { await db.open(); } catch (e) {
+    if (e.name !== 'VersionError') throw e;
+    await window.Dexie.delete('myrtle-creek'); location.reload(); return;
+  }
   await seedIfEmpty();
   navigator.storage?.persist?.().catch(() => {});
   addEventListener('hashchange', show);
@@ -105,5 +111,5 @@ new MutationObserver(() => {
   await show();
   await w.done;
   startSyncLoop();
-  snapshotIfStale().catch(e => console.warn('snapshot', e));
+  snapshotIfStale().catch(() => {});
 })();

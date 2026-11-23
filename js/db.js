@@ -1,16 +1,19 @@
-import { uid, sum, lineNets } from './util.js';
+import { sum, lineNets } from './util.js';
 import { productStats, suggestQty, minutesOf } from './insights.js';
 import { reservedByProduct } from './orders.js';
 import { STORES } from './syncing.js';
 const Dexie = window.Dexie;
 
 export const db = new Dexie('myrtle-creek');
+/* SCHEMA CHANGES: never edit a version() that has shipped, because devices already hold data in it.
+   To change tables add db.version(N + 1).stores({ ...only the changed tables }) and, if existing rows must be
+   reshaped, chain .upgrade(tx => ...). Dexie then migrates each device's data in place. */
 db.version(1).stores({
-  types: 'id',                                   // Punnet / Tube / Tree: {id,name,sort}
+  types: 'id',                                   // Punnet / Tube / Tree: {id,name,sort,hidden}
   groups: 'id',                                  // pricing groups (deals pool within a group): {id,name,sort,unit,deals:[{qty,price}]}
   products: 'id,type,group,active',              // {id,type,group,category,name,price|null,active}
-  locations: 'id',                               // {id,name}
-  marketDays: 'id,date,location,status',         // {...}
+  locations: 'id',                               // {id,name,hidden}
+  marketDays: 'id,date,location,status',
   sales: 'id,marketDayId,timestamp',
   stock: 'id,productId',                         // id = productId|locationId, nursery stock
   dayStock: 'id,marketDayId',                    // id = dayId|productId, {taken,returned}
@@ -21,26 +24,8 @@ db.version(1).stores({
   losses: 'id,marketDayId,locationId,productId', // {productId,qty,reason,note,unitPrice,date,marketDayId|null,locationId}
   soldOut: 'id,marketDayId',                     // {marketDayId,productId,ts}
   snapshots: 'id',                               // rolling local safety copies (last 5)
-  outbox: 'id',                                  // retired in version 2
+  syncState: 'id',                               // {id:'store:id', acked: updatedAt, gone?}
   settings: 'key',
-});
-
-/* SCHEMA CHANGES: never edit a version() that has shipped. Devices already hold data in it.
-   To change tables add db.version(N + 1).stores({ ...only the changed tables }) and, if existing rows must be
-   reshaped, chain .upgrade(tx => ...). Dexie then migrates each device's data in place. */
-db.version(2).stores({ syncState: 'id', outbox: null });   // syncState: {id:'store:id', acked: updatedAt, gone?}
-
-// Version 3: the stall fee on a market day became an ordinary expense in cashMovements (category 'stallfee').
-db.version(3).stores({}).upgrade(async tx => {
-  const days = await tx.table('marketDays').toArray();
-  for (const day of days) {
-    if (!(day.stallFee > 0)) continue;
-    const inCash = (day.stallFeeMethod || 'cash') === 'cash';
-    await tx.table('cashMovements').put({ id: 'stall-' + day.id, marketDayId: day.id, type: inCash ? 'cashOut' : 'expense', category: 'stallfee', method: day.stallFeeMethod || 'cash',
-      amount: day.stallFee, note: 'Stall fee', date: day.date, ts: Date.now(), updatedAt: Date.now() });
-    const { stallFee, stallFeeMethod, ...rest } = day;
-    await tx.table('marketDays').put({ ...rest, updatedAt: Date.now() });
-  }
 });
 
 /** Every synced record carries updatedAt. Turned off while importing so the original timestamps are kept. */
@@ -51,9 +36,9 @@ for (const name of Object.keys(STORES)) {
 }
 
 export const NURSERY = 'nursery';
-/** People for "Who was there": [{name, hidden?}]. Strings from older data are accepted. */
-export const DEFAULT_PEOPLE = ['Luca', 'Ysis'];
-export async function getPeople() { return ((await getSetting('staffNames')) ?? DEFAULT_PEOPLE).map(x => (typeof x === 'string' ? { name: x } : x)); }
+/** People for "Who was there": [{name, hidden?}]. */
+const DEFAULT_PEOPLE = [{ name: 'Luca' }, { name: 'Ysis' }];
+export const getPeople = async () => (await getSetting('staffNames')) ?? DEFAULT_PEOPLE;
 export const setPeople = list => setSetting('staffNames', list);
 export const getSetting = async (k, d = null) => (await db.settings.get(k))?.value ?? d;
 export const setSetting = (k, value) => db.settings.put({ key: k, value });
@@ -134,9 +119,9 @@ export function paymentTotals(sales, extra = []) {
   return t;
 }
 /** Payments taken against orders while this market day was open. */
-export const orderPaymentsForDay = async id => (await db.orders.toArray()).flatMap(o => (o.payments || []).map(p => ({ ...p, customer: o.customer }))).filter(p => p.marketDayId === id);
+const orderPaymentsForDay = async id => (await db.orders.toArray()).flatMap(o => (o.payments || []).map(p => ({ ...p, customer: o.customer }))).filter(p => p.marketDayId === id);
 export const dayReceipts = async (dayId, sales) => paymentTotals(sales, await orderPaymentsForDay(dayId));
-/** Cash in the float should be: float + cash received - cash taken out - cash stall fee. Also totals expenses. */
+/** Cash in the float should be: float + cash received + cash repaid - cash taken out. Also totals expenses. */
 export const dayCash = async (day, sales) => {
   const mv = await db.cashMovements.where('marketDayId').equals(day.id).toArray();
   const extra = sum(mv.filter(m => m.type === 'float'), m => m.amount), out = sum(mv.filter(m => m.type === 'cashOut'), m => m.amount);

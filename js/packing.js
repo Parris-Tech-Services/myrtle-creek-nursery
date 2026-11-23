@@ -1,5 +1,5 @@
 import { db, catalog, markets, packingPlan, openDay } from './db.js';
-import { esc, groupBy, $, $$ } from './util.js';
+import { esc, groupBy, $ } from './util.js';
 import { showPostDialog } from './postview.js';
 import { clock } from './insights.js';
 

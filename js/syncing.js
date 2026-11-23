@@ -7,7 +7,7 @@ export const STORES = {
   batches: 'id', products: 'id', types: 'id', groups: 'id', locations: 'id', packing: 'id', settings: 'key',
 };
 /** Only these settings are copied to the sheet. Never the connection key. */
-export const SYNCED_SETTINGS = ['lastFloat', 'nextFloat', 'staffNames', 'stallFees'];
+export const SYNCED_SETTINGS = ['nextFloat', 'staffNames', 'stallFees'];
 export const idOf = (store, rec) => String(rec[STORES[store]]);
 
 /**
@@ -45,7 +45,6 @@ export function mergeRecords(store, local, remote, mode) {
   return { write, keptLocal: remote.length - write.length };
 }
 
-export const encodeConnection = (url, key) => btoa(JSON.stringify({ u: url, k: key }));
 export function decodeConnection(code) {
   try {
     const o = JSON.parse(atob(String(code).replace(/\s+/g, '')));

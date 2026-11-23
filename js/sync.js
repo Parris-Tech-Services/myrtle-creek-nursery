@@ -35,7 +35,7 @@ export async function cashCsv() {
 }
 
 // ---- backup / restore ----------------------------------------------------
-export const BACKUP_SKIP = new Set(['outbox', 'snapshots', 'syncState']);
+const BACKUP_SKIP = new Set(['snapshots', 'syncState']);
 /** Hand a file to the iOS share sheet if possible, otherwise download it. Returns true if delivered. */
 export async function deliverFile(blob, name) {
   const file = new File([blob], name, { type: blob.type || 'application/octet-stream' });

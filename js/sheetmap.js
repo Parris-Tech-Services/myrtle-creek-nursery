@@ -43,7 +43,6 @@ const REASON = { transport: 'Damaged in transport', heat: 'Wilted / heat', stole
 const METHOD = { cash: 'Float', card: 'Card', transfer: 'Transfer / PayID' };
 const CAT = { stallfee: 'Stall fee', fuel: 'Fuel', supplies: 'Supplies', borrowed: 'Borrowed from the float', other: 'Other' };
 const MOVE = { cashOut: 'Cash out', expense: 'Expense', float: 'Float added', repaid: 'Repaid' };
-const METHODS = { sales: 'method' };
 
 /**
  * rec: a stored record. ctx: {days:{id:day}, loc(id), pn(id, line), gmap, tmap, cash} where cash is the cash-count summary for a market day.
@@ -75,7 +74,7 @@ export function rowsFor(store, rec, ctx) {
     case 'groups': return one('Products & prices', ['Pricing group', rec.name, '', '', rec.name, '', $(rec.unit), (rec.deals || []).map(d => `${d.qty} for $${(d.price / 100).toFixed(2)}`).join(', '), '']);
     case 'settings':
       if (rec.key !== 'staffNames') return { rows: [] };
-      return { replaceTabs: ['People'], rows: (rec.value || []).map(p => { const x = typeof p === 'string' ? { name: p } : p; return { tab: 'People', id: 'people:' + x.name, cells: [x.name, yes(!x.hidden)] }; }) };
+      return { replaceTabs: ['People'], rows: (rec.value || []).map(p => ({ tab: 'People', id: 'people:' + p.name, cells: [p.name, yes(!p.hidden)] })) };
     default: return { rows: [] };   // types, locations, packing: only in _data
   }
 }

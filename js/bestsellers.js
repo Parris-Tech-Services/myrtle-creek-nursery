@@ -1,6 +1,6 @@
 import { catalog, loadVisits, markets } from './db.js';
 import { productStats, rollupStats, splitPeriods, trend, rank, highlights, ARROW, clock, pct } from './insights.js';
-import { esc, money, $ } from './util.js';
+import { esc, money } from './util.js';
 
 const st = { loc: null, n: 6, by: 'sellThrough', view: 'product' };
 const bar = x => (x == null ? '-' : `<span class="bar"><i style="width:${Math.min(100, Math.round(x * 100))}%"></i></span> ${pct(x)}`);

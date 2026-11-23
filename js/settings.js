@@ -1,4 +1,4 @@
-import { db, getSetting, setSetting } from './db.js';
+import { db, getSetting } from './db.js';
 import { exportBackup, importBackup, salesCsv, ordersCsv, cashCsv, daysCsv, deliverFile, restoreSnapshot } from './sync.js';
 import { getConn, connect, disconnect, flush, pending, remoteCounts, localCounts, restoreFromSheet, syncStatus, scriptOutdated, resendAll } from './gsync.js';
 import { esc, fmtDateTime, ymd, $ } from './util.js';
@@ -82,7 +82,7 @@ async function restoreFlow(root) {
 }
 
 /** Steps for updating the script in the Sheet. The new script text is fetched from this app's own files. */
-export function updateDialog() {
+function updateDialog() {
   const o = overlay(`<h3>Update your Google Sheet</h3><p>Your link stays the same, so you do not need to reconnect.</p>
     <button class="btn primary big" id="copyscript">Copy new script</button>
     <ol><li>Open your Google Sheet. Choose <b>Extensions</b>, then <b>Apps Script</b>.</li>

@@ -1,9 +1,9 @@
-import { db, catalog, openDay, salesForDay, soldByProduct, lossesForDay, lostByProduct, loadVisits, markets, getSetting } from './db.js';
+import { db, catalog, openDay, salesForDay, soldByProduct, lossesForDay, lostByProduct, loadVisits, markets } from './db.js';
 import { priceBasket, unitPriceFor, dealsFor, makeLine } from './pricing.js';
 import { productStats } from './insights.js';
 import { flush } from './gsync.js';
 import { esc, money, uid, sum, groupBy, ymd, $, $$, fmtDate } from './util.js';
-import { askForm, toast, undoToast, confirmBox, overlay } from './ui.js';
+import { askForm, toast, undoToast, overlay } from './ui.js';
 import { changeDialog } from './changecalc.js';
 import { pickupsFor, showPickups } from './ordersview.js';
 import { checklistCard, wireChecklist } from './checklist.js';

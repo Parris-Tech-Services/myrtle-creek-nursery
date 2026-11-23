@@ -22,7 +22,7 @@ const PAIRS = [
   ['brick', 'paper', TEXT, 'red text'], ['brick', 'card', TEXT, 'red text, danger buttons'], ['soil', 'paper', TEXT, 'brown text'],
   ['on-olive', 'olive', TEXT, 'primary button text'], ['on-brick', 'brick', TEXT, 'red banner text'],
   ['ink', 'sage-bg', TEXT, 'save/group rows'], ['banner-ink', 'straw-bg', TEXT, 'banner text'],
-  ['muted', 'tint-out', TEXT, 'sold-out caption'], ['brick', 'tint-out', TEXT, 'sold-out label'],
+  ['muted', 'soldout-bg', TEXT, 'sold-out caption'], ['brick', 'soldout-bg', TEXT, 'sold-out label'],
   ['nav-ink', 'nav-bg', TEXT, 'tab text'], ['nav-on-ink', 'nav-on-bg', TEXT, 'active tab text'],
   ['ink', 'tag-bg', TEXT, 'tag'], ['tag-ok-ink', 'tag-ok-bg', TEXT, 'ok tag'], ['tag-bad-ink', 'tag-bad-bg', TEXT, 'warning tag'],
   ['ink', 'sage-bg', TEXT, 'summary text'],
