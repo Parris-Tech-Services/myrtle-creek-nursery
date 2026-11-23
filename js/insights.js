@@ -73,23 +73,28 @@ export function highlights(here, others = {}) {
 }
 
 /**
- * Packing suggestion from this market's own history (last few visits).
- * Returns {qty, reason}. qty includes held orders and is capped by nursery stock.
+ * Packing suggestion. Uses this market's recent visits; otherwise the average across all markets (`fallback`), then `defaultQty`.
+ * A product that has ever sold here keeps a minimum of 2. Returns {qty, demand, shortfall, reason}:
+ * demand includes held orders; qty is demand capped by nursery stock; shortfall is how many more the nursery would need.
  */
-export function suggestQty({ stats, lastTaken = 0, lastSold = 0, held = 0, stock = Infinity }) {
-  if (!stats || !stats.visits) return { qty: Math.min(held, stock), reason: held ? 'held orders only' : 'no history at this market' };
+export function suggestQty({ stats, everSold = 0, fallback = null, lastTaken = 0, lastSold = 0, held = 0, stock = Infinity, defaultQty = 0 }) {
   let demand, reason;
-  const n = stats.visits;
-  if (stats.soldOut >= 1) {
-    demand = Math.max(stats.avgSold, lastTaken) * 1.3;
-    reason = `sold out by ${clock(stats.avgSoldOutMin)} ${stats.soldOut === 1 ? 'last visit' : `last ${stats.soldOut} visits`}, bring more`;
-  } else if (stats.sellThrough != null && stats.sellThrough < 0.4 && stats.takenVisits >= 3) {
-    demand = Math.min(stats.avgSold * 1.1, lastTaken * 0.8);
-    reason = `slow here: ${pct(stats.sellThrough)} sold over ${stats.takenVisits} visits, bring fewer`;
-  } else {
-    demand = Math.max(lastSold, stats.avgSold) * 1.2;
-    reason = stats.sellThrough != null ? `${pct(stats.sellThrough)} sold over ${stats.takenVisits} visit${stats.takenVisits === 1 ? '' : 's'}` : `sold ${stats.sold} over ${n} visit${n === 1 ? '' : 's'}`;
-  }
-  const qty = Math.max(0, Math.min(Math.round(demand) + held, stock));
-  return { qty, reason: held ? `${reason}; includes ${held} held` : reason };
+  if (stats?.visits) {
+    const n = stats.visits;
+    if (stats.soldOut >= 1) {
+      demand = Math.max(stats.avgSold, lastTaken) * 1.3;
+      reason = `sold out by ${clock(stats.avgSoldOutMin)} ${stats.soldOut === 1 ? 'last visit' : `last ${stats.soldOut} visits`}, bring more`;
+    } else if (stats.sellThrough != null && stats.sellThrough < 0.4 && stats.takenVisits >= 3) {
+      demand = Math.min(stats.avgSold * 1.1, lastTaken * 0.8);
+      reason = `slow here: ${pct(stats.sellThrough)} sold over ${stats.takenVisits} visits, bring fewer`;
+    } else {
+      demand = Math.max(lastSold, stats.avgSold) * 1.2;
+      reason = stats.sellThrough != null ? `${pct(stats.sellThrough)} sold over ${stats.takenVisits} visit${stats.takenVisits === 1 ? '' : 's'}` : `sold ${stats.sold} over ${n} visit${n === 1 ? '' : 's'}`;
+    }
+  } else if (fallback?.visits) {
+    demand = fallback.avgSold * 1.2; reason = `new here: average across markets (${fallback.visits} visit${fallback.visits === 1 ? '' : 's'})`;
+  } else { demand = defaultQty; reason = defaultQty ? 'no history yet: starting amount' : 'no history yet'; }
+  if (everSold > 0 && demand < 2) { demand = 2; reason += '; keeping a minimum as it has sold here'; }
+  const wanted = Math.round(demand) + held;
+  return { qty: Math.max(0, Math.min(wanted, stock)), demand: wanted, shortfall: Number.isFinite(stock) ? Math.max(0, wanted - stock) : 0, reason: held ? `${reason}; includes ${held} held` : reason };
 }

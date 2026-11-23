@@ -12,6 +12,8 @@ const cap = s => s.charAt(0).toUpperCase() + s.slice(1);
 const catHeading = c => (/tomato$/i.test(c) ? c.replace(/tomato$/i, m => m + 'es') : c).toUpperCase();
 const byName = (a, b) => a.localeCompare(b, 'en', { sensitivity: 'base' });
 const list = a => [...a].sort(byName);
+/** "Basil (Purple)", not just "Purple": a bare variety name means little in a post. */
+const fullName = p => (p.category && p.category !== BROAD && p.category !== p.name ? `${p.category} (${p.name})` : p.name);
 
 export const DEFAULTS = { emoji: true, limited: true, limit: 6, fresh: true, pickup: false, pickupText: '', hold: false, signoff: '' };
 
@@ -67,11 +69,11 @@ export function buildPost({ market, date, time = '', going, qty = {}, groups, gr
   }
 
   if (o.limited) {
-    const few = going.filter(p => (qty[p.id] ?? Infinity) > 0 && (qty[p.id] ?? Infinity) <= o.limit).map(p => p.name);
+    const few = going.filter(p => (qty[p.id] ?? Infinity) > 0 && (qty[p.id] ?? Infinity) <= o.limit).map(fullName);
     if (few.length) L.push(`${e('⏳')}Limited numbers: ${list(few).join(', ')}`);
   }
   if (o.fresh && prevIds && prevIds.size) {
-    const fresh = going.filter(p => !prevIds.has(p.id)).map(p => p.name);
+    const fresh = going.filter(p => !prevIds.has(p.id)).map(fullName);
     if (fresh.length) L.push(`${e('🌱')}NEW this week: ${list(fresh).join(', ')}`);
   }
   // Order at the bottom: sign-off, then the pickup note, then "hold plants" as the very last line.

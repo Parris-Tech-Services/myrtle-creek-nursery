@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { countTotal, breakdown, diffCounts } from '../js/cash.js';
+import { countTotal, breakdown, diffCounts, floatMix } from '../js/cash.js';
 
 test('count total', () => assert.equal(countTotal({ 5000: 1, 2000: 2, 100: 3, 5: 1 }), 5000 + 4000 + 300 + 5));
 test('breakdown of a float uses what was counted first', () => {
@@ -42,3 +42,16 @@ test('quick amounts above the total', () => {
 });
 
 test('diff table tolerates a float that has not been counted yet (null)', () => assert.deepEqual(diffCounts(null, { 2000: 1 }).map(r => r.after), [1]));
+
+test('float mix is change-friendly: no $50 or $100 notes, mostly $20s and $10s, and it adds up', () => {
+  const m = floatMix(10000);
+  assert.equal(countTotal(m), 10000);
+  assert.equal(m[10000] || 0, 0); assert.equal(m[5000] || 0, 0);
+  assert.ok(m[2000] >= 2 && m[1000] >= 4 && m[500] >= 2);
+  for (const amount of [5000, 8575, 12000, 35]) assert.equal(countTotal(floatMix(amount)), amount);
+});
+test('float mix uses what was counted first', () => {
+  const m = floatMix(5000, { 2000: 1, 1000: 2, 100: 50 });
+  assert.equal(countTotal(m), 5000);
+  assert.ok(m[2000] >= 1);
+});

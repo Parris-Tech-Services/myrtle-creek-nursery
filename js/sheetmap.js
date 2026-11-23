@@ -35,7 +35,7 @@ const pad = n => String(n).padStart(2, '0');
 export const hhmm = ts => (ts ? `${pad(new Date(ts).getHours())}:${pad(new Date(ts).getMinutes())}` : '');
 const $ = c => (c == null || c === '' ? '' : c / 100);
 const yes = b => (b ? 'Yes' : '');
-const PAY = { cash: 'Cash', card: 'Card', transfer: 'Transfer / PayID', split: 'Split', order: 'Order (paid earlier)' };
+const PAY = { none: 'Free', cash: 'Cash', card: 'Card', transfer: 'Transfer / PayID', split: 'Split', order: 'Order (paid earlier)' };
 const FUL = { market: 'Pick up at market', pambula: 'Pick up at Pambula', delivery: 'Delivery' };
 const STATUS = { open: 'Open', closed: 'Closed', held: 'Held', collected: 'Collected', cancelled: 'Cancelled' };
 const PAYST = { unpaid: 'Unpaid', part: 'Part paid', paid: 'Paid' };

@@ -1,14 +1,17 @@
 import { db, catalog, openDay, salesForDay, soldByProduct, lossesForDay, lostByProduct, loadVisits, markets } from './db.js';
+import { reservedByProduct } from './orders.js';
+import { loadBasket, saveBasket } from './basketstore.js';
 import { priceBasket, unitPriceFor, dealsFor, makeLine } from './pricing.js';
 import { productStats } from './insights.js';
 import { flush } from './gsync.js';
-import { esc, money, uid, sum, groupBy, ymd, $, $$, fmtDate } from './util.js';
-import { askForm, toast, undoToast, overlay } from './ui.js';
+import { esc, money, uid, sum, groupBy, ymd, $, $$, fmtDate, clampQty, MAX_QTY } from './util.js';
+import { askForm, toast, undoToast, overlay, guard } from './ui.js';
 import { changeDialog } from './changecalc.js';
 import { pickupsFor, showPickups } from './ordersview.js';
 import { checklistCard, wireChecklist } from './checklist.js';
 
 let activeChip = 'all', searchText = '';
+let statsCache = { dayId: null, stats: {} };   // best-seller order comes from closed days only, so it cannot change during the day: compute it once per day
 
 /** Filter chips: categories with 3+ products get their own chip; the small ones in a type share one. */
 function chipsFor(products, types) {
@@ -32,7 +35,7 @@ async function noDay(root) {
     <p><a href="#market">Choose a different place or count the float first</a></p></div>`;
   wireChecklist(root, () => noDay(root));
   $('#startnow', root).onclick = async () => {
-    await db.marketDays.put({ id: uid(), date: ymd(), location: loc, status: 'open', float: 0, floatCounts: null, floatPending: true, countedCash: null, closedAt: null });
+    await db.marketDays.put({ id: uid(), date: ymd(), location: loc, status: 'open', startedAt: Date.now(), float: 0, floatCounts: null, floatPending: true, countedCash: null, closedAt: null });
     render(root);
   };
 }
@@ -48,10 +51,12 @@ export async function render(root) {
   const lost = lostByProduct(await lossesForDay(day.id));
   const out = new Set((await db.soldOut.where('marketDayId').equals(day.id).toArray()).map(r => r.productId));
   const orders = (await pickupsFor(day)).length;
-  const stats = productStats(await loadVisits(day.location));   // best sellers here first; history only, so the order is stable all day
+  if (statsCache.dayId !== day.id) statsCache = { dayId: day.id, stats: productStats(await loadVisits(day.location)) };   // best sellers here first
+  const stats = statsCache.stats;
+  const heldHere = reservedByProduct(await db.orders.toArray(), day.location);   // reserved for held orders: not for walk-up sales
   const products = [...all].sort((a, b) => (a.category || '').localeCompare(b.category || '') || (stats[b.id]?.sold || 0) - (stats[a.id]?.sold || 0) || a.name.localeCompare(b.name));
   const info = l => pmap[l.productId] || { label: l.name || 'Other item', group: 'misc' };
-  let basket = [], soldOutMode = false;   // basket lines: {key, productId, qty, unitPrice, lineType, note}
+  let basket = await loadBasket(day.id), soldOutMode = false;   // basket lines: {key, productId, qty, unitPrice, lineType, note}; saved on every change
 
   const priced = () => priceBasket(basket.map(l => ({ ...l, group: info(l).group })), dealsByGroup);
   const byType = groupBy(products, p => p.type), chips = chipsFor(products, types);
@@ -61,7 +66,7 @@ export async function render(root) {
     <div class="grid-wrap">
       <div class="subhead"><span>${esc(lmap[day.location]?.name)} &middot; ${fmtDate(day.date)}</span>
         <span class="btns">${day.floatPending ? '<button class="btn small" id="floatlater">Count float</button>' : ''}${orders ? `<button class="btn small" id="orders">Orders here: ${orders}</button>` : ''}
-        <button class="btn small ghost" id="soldout">Sold out</button><button class="btn small ghost" id="misc">Other item</button><button class="btn small ghost" id="undo">Undo last sale</button></span></div>
+        <button class="btn small ghost" id="soldout">Sold out</button><button class="btn small ghost" id="misc">Other item</button></span></div>
       ${anyLoaded ? '' : '<p class="muted hint">Stock not loaded today</p>'}
       <div id="modehint" class="banner" hidden>Tap the product that sold out. <button class="linkbtn" id="modecancel">Cancel</button></div>
       <div class="chipbar" role="toolbar" aria-label="Filter products">
@@ -79,7 +84,7 @@ export async function render(root) {
 
   const remaining = p => (taken[p] || 0) - (sold[p] || 0) - (lost[p] || 0);   // market stock still on the stall
   const inBasket = p => sum(basket.filter(l => l.productId === p), l => l.qty);
-  const left = p => { if (!anyLoaded) return ''; const r = remaining(p) - inBasket(p); return taken[p] == null && r <= 0 ? '! not loaded' : r < 0 ? `! over by ${-r}` : r === 0 ? '! none left' : `${r} left`; };
+  const left = p => { if (!anyLoaded) return ''; const r = remaining(p) - (heldHere[p] || 0) - inBasket(p); return taken[p] == null && r <= 0 ? '! not loaded' : r < 0 ? `! over by ${-r}` : r === 0 ? '! none left' : `${r} left`; };
 
   function applyFilter() {
     const q = searchText.trim().toLowerCase();
@@ -90,7 +95,7 @@ export async function render(root) {
   function badges() {
     $$('.tw', root).forEach(w => {
       const t = $('.tile', w), id = t.dataset.p, q = inBasket(id), b = $('.badge', t);
-      b.hidden = !q; b.textContent = q; $('.minus', w).hidden = !q; $('.left', t).textContent = left(id); t.classList.toggle('low', anyLoaded && remaining(id) - q <= 0);
+      b.hidden = !q; b.textContent = q; $('.minus', w).hidden = !q; $('.left', t).textContent = left(id); t.classList.toggle('low', anyLoaded && remaining(id) - (heldHere[id] || 0) - q <= 0);
     });
   }
   function draw() {
@@ -103,11 +108,13 @@ export async function render(root) {
       ${r.dealSavings ? `<div class="save">Deals save the customer ${money(r.dealSavings)}
         ${Object.entries(r.savingsByGroup).map(([t, v]) => `<small>${esc(gmap[t]?.name)}: ${money(v)}</small>`).join('')}</div>` : ''}</div>
       <div class="bfoot"><div class="total" aria-live="polite"><span>Total</span><b>${money(r.total)}</b></div>
-      <div class="row"><button class="btn ghost" id="clear" ${basket.length ? '' : 'disabled'}>Clear</button>
-      <button class="btn primary big" id="charge" ${basket.length ? '' : 'disabled'}>Pay ${money(r.total)}</button></div></div>`;
+      <div class="row"><button class="btn ghost" id="clear" ${basket.length ? '' : 'disabled'}>Clear basket</button>
+      <button class="btn primary big" id="charge" ${basket.length ? '' : 'disabled'}>Pay ${money(r.total)}</button></div><button class="btn small ghost" id="undo">Undo last sale</button></div>`;
     $('#basket').classList.toggle('open', open && basket.length > 0);
     $('#bv').innerHTML = units ? `<small>${units} item${units > 1 ? 's' : ''}</small><b>${money(r.total)}</b>` : '<small>Basket empty</small><b>$0.00</b>';
-    $('#pay').disabled = !units;
+    const allFree = basket.length > 0 && basket.every(l => l.lineType === 'freebie');
+    $('#pay').disabled = !units || (r.total <= 0 && !allFree); $('#charge').disabled = $('#pay').disabled;   // $0 only when every line is an explicit freebie
+    saveBasket(day.id, basket);
     badges();
   }
 
@@ -115,9 +122,9 @@ export async function render(root) {
   const add = id => {
     if (soldOutMode) return markSoldOut(id);
     const l = basket.find(l => l.productId === id && l.lineType === 'normal');
-    l ? l.qty++ : basket.push({ key: uid(), ...makeLine(pmap[id], gmap) });
+    if (l) l.qty = Math.min(MAX_QTY, l.qty + 1); else basket.push({ key: uid(), ...makeLine(pmap[id], gmap) });
     draw(); flash(id);
-    if (anyLoaded && remaining(id) - inBasket(id) < 0) toast(`${pmap[id].label}: more than the ${Math.max(0, remaining(id))} left on the stall. The sale is allowed but will show in the end-of-day check.`, 4500);
+    if (anyLoaded && remaining(id) - (heldHere[id] || 0) - inBasket(id) < 0) toast(`${pmap[id].label}: more than the ${Math.max(0, remaining(id) - (heldHere[id] || 0))} left to sell. The sale is allowed but will show in the end-of-day check.`, 4500);
   };
   const removeOne = id => {
     const i = basket.findIndex(l => l.productId === id && l.lineType === 'normal') >= 0 ? basket.findIndex(l => l.productId === id && l.lineType === 'normal') : basket.findIndex(l => l.productId === id);
@@ -133,7 +140,7 @@ export async function render(root) {
     if (t.id === 'searchbtn') { const row = $('#searchrow', root); row.hidden = !row.hidden; t.setAttribute('aria-expanded', String(!row.hidden)); if (!row.hidden) $('#search', root).focus(); else { searchText = ''; $('#search', root).value = ''; applyFilter(); } return; }
     if (t.id === 'bv') return $('#basket').classList.add('open');
     if (t.id === 'close') return $('#basket').classList.remove('open');
-    if (d.a != null) { basket[+d.a].qty++; return draw(); }
+    if (d.a != null) { basket[+d.a].qty = Math.min(MAX_QTY, basket[+d.a].qty + 1); return draw(); }
     if (d.m != null) { const l = basket[+d.m]; if (--l.qty <= 0) basket.splice(+d.m, 1); return draw(); }
     if (t.id === 'clear') { basket = []; return draw(); }
     if (d.e != null) return editLine(+d.e);
@@ -162,17 +169,17 @@ export async function render(root) {
   async function editLine(i) {
     const l = basket[i], isMisc = l.productId === 'misc';
     const v = await askForm(info(l).label, [
-      { name: 'qty', label: 'Quantity', type: 'number' },
-      { name: 'lineType', label: 'Line type', type: 'select', options: [['normal', 'Normal (joins deals)'], ['seconds', 'Seconds'], ['discount', 'Discount']] },
-      { name: 'unitPrice', label: 'Price each', type: 'money', hint: 'Seconds and discount lines never join multi-buy deals.' },
+      { name: 'qty', label: 'Quantity', type: 'number', min: 1 },
+      { name: 'lineType', label: 'Line type', type: 'select', options: [['normal', 'Normal (joins deals)'], ['seconds', 'Seconds'], ['discount', 'Discount'], ['freebie', 'Freebie (no charge)']] },
+      { name: 'unitPrice', label: 'Price each', type: 'money', hint: 'Seconds, discounts and freebies never join multi-buy deals. Prices cannot be negative.' },
       { name: 'note', label: 'Note' }], l, { extra: [['remove', 'Remove']] });
     if (!v) return;
     if (v._action === 'remove' || !(v.qty > 0)) basket.splice(i, 1);
     else {
-      if (isMisc) Object.assign(l, { qty: Math.round(v.qty), unitPrice: v.unitPrice, note: v.note, lineType: 'other' });
-      else Object.assign(l, { qty: Math.round(v.qty), lineType: v.lineType, note: v.note, unitPrice: v.lineType === 'normal' ? price(pmap[l.productId]) : v.unitPrice });
+      if (isMisc) Object.assign(l, { qty: clampQty(v.qty, 1), unitPrice: v.unitPrice, note: v.note, lineType: 'other' });
+      else Object.assign(l, { qty: clampQty(v.qty, 1), lineType: v.lineType, note: v.note, unitPrice: v.lineType === 'normal' ? price(pmap[l.productId]) : v.lineType === 'freebie' ? 0 : v.unitPrice });
       const twin = !isMisc && basket.find(x => x !== l && x.productId === l.productId && x.lineType === 'normal' && l.lineType === 'normal');
-      if (twin) { twin.qty += l.qty; basket.splice(basket.indexOf(l), 1); }
+      if (twin) { twin.qty = Math.min(MAX_QTY, twin.qty + l.qty); basket.splice(basket.indexOf(l), 1); }
     }
     draw();
   }
@@ -186,11 +193,13 @@ export async function render(root) {
     });
   }
 
-  async function charge() {
+  const charge = () => guard('pay', async () => {   // a second tap while paying does nothing
     const r = priced(); if (!basket.length) return;
-    const m = await payChoice(r.total);
+    const free = r.total === 0 && basket.every(l => l.lineType === 'freebie');
+    if (r.total <= 0 && !free) return toast('Nothing to pay. Mark the lines as freebies to give them away.');
+    const m = free ? 'none' : await payChoice(r.total);
     if (!m) return;
-    let payments = [{ method: m, amount: r.total }];
+    let payments = free ? [] : [{ method: m, amount: r.total }];
     if (m === 'split') {
       const v = await askForm('Split payment', [
         { name: 'cash', label: 'Cash', type: 'money' }, { name: 'card', label: 'Card', type: 'money' }, { name: 'transfer', label: 'Transfer / PayID', type: 'money' }], {}, { submit: 'Next' });
@@ -216,25 +225,26 @@ export async function render(root) {
       id: uid(), marketDayId: day.id, timestamp: Date.now(),
       lines: basket.map(({ productId, qty, unitPrice, lineType, note, name }) => ({ productId, qty, unitPrice, lineType, note, ...(name ? { name } : {}) })),
       dealSavings: r.dealSavings, savingsByGroup: r.savingsByGroup, total: r.total,
-      paymentMethod: payments.length > 1 ? 'split' : payments[0].method, payments, voided: false,
+      paymentMethod: free ? 'none' : payments.length > 1 ? 'split' : payments[0].method, payments, voided: false,
       ...(cashPay ? { rounding: cash.rounding, cashTendered: cash.tendered, changeGiven: cash.change } : {}),
     };
-    await db.transaction('rw', db.sales, async () => { await db.sales.add(sale); });
+    await db.transaction('rw', db.sales, db.settings, async () => { await db.sales.add(sale); await db.settings.delete('basket'); });   // the sale and the empty basket are saved together
+    basket = [];
     flush();
     await render(root);   // basket is empty again for the next customer
     undoToast(`Sale saved ✓ ${money(sale.total)}`, async () => { await voidSale(sale.id); render(root); });
-  }
+  });
 
   async function voidSale(id) {
     await db.transaction('rw', db.sales, async () => { await db.sales.update(id, { voided: true, voidedAt: Date.now() }); });
     flush();
   }
-  async function undo() {
+  const undo = () => guard('undo', async () => {
     const last = (await salesForDay(day.id)).filter(s => !s.fromOrder).pop();
     if (!last) return toast('No sales to undo');
     await voidSale(last.id); render(root);
     undoToast(`Sale removed \u00b7 ${money(last.total)}`, async () => { await db.sales.update(last.id, { voided: false, voidedAt: null }); render(root); }, 'Restore');
-  }
+  });
   async function misc() {
     const v = await askForm('Other item', [{ name: 'name', label: 'What is it?' }, { name: 'unitPrice', label: 'Price each', type: 'money' }, { name: 'qty', label: 'Quantity', type: 'number' }], { qty: 1 }, { submit: 'Add to basket' });
     if (!v?.name || !(v.unitPrice > 0) || !(v.qty > 0)) return;

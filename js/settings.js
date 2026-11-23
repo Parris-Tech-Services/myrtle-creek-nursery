@@ -2,7 +2,8 @@ import { db, getSetting } from './db.js';
 import { exportBackup, importBackup, salesCsv, ordersCsv, cashCsv, daysCsv, deliverFile, restoreSnapshot } from './sync.js';
 import { getConn, connect, disconnect, flush, pending, remoteCounts, localCounts, restoreFromSheet, syncStatus, scriptOutdated, resendAll } from './gsync.js';
 import { esc, fmtDateTime, ymd, $ } from './util.js';
-import { toast, confirmBox, choose, overlay } from './ui.js';
+import { toast, confirmBox, choose, overlay, notice } from './ui.js';
+import { listSnapshots } from './safety.js';
 import { APP_VERSION } from './version.js';
 
 export async function backupDue() {
@@ -15,7 +16,7 @@ export async function render(root) {
   const standalone = navigator.standalone || matchMedia('(display-mode: standalone)').matches;
   const est = navigator.storage?.estimate ? await navigator.storage.estimate() : null;
   const conn = await getConn();
-  const snaps = (await db.snapshots.toArray()).sort((a, b) => b.ts - a.ts);
+  const snaps = await listSnapshots();
   root.innerHTML = `<div class="card"><h2>Backup</h2>
     <div class="kv"><span>Last backup</span><b>${fmtDateTime(await getSetting('lastBackup'))}</b></div>
     ${await backupDue() ? '<p class="warn-text">A market day has been closed since your last backup.</p>' : ''}
@@ -50,7 +51,7 @@ export async function render(root) {
     if (b.id === 'dcsv') return deliverFile(new Blob([await daysCsv()], { type: 'text/csv' }), `myrtle-creek-days-${ymd()}.csv`);
     if (b.id === 'ccsv') return deliverFile(new Blob([await cashCsv()], { type: 'text/csv' }), `myrtle-creek-cash-${ymd()}.csv`);
     if (b.id === 'ocsv') return deliverFile(new Blob([await ordersCsv()], { type: 'text/csv' }), `myrtle-creek-orders-${ymd()}.csv`);
-    if (b.dataset.snap) { if (await confirmBox('Replace all current data with this snapshot?', 'Restore', true)) { await restoreSnapshot(b.dataset.snap); location.reload(); } return; }
+    if (b.dataset.snap) { if (await confirmBox('Replace all current data with this snapshot?', 'Restore', true)) { try { await restoreSnapshot(b.dataset.snap); location.reload(); } catch (err) { await notice('Could not restore', err.message); } } return; }
     if (b.id === 'csv') return deliverFile(new Blob([await salesCsv()], { type: 'text/csv' }), `myrtle-creek-sales-${ymd()}.csv`);
     if (b.id === 'restore' || b.id === 'merge') { mode = b.id; if (mode === 'restore' && !await confirmBox('Restore will REPLACE all data on this device with the file. Continue?', 'Continue', true)) return; $('#file').click(); }
     if (b.id === 'sync') { if (syncStatus.busy) { toast('Already syncing. This can take a minute the first time.', 4000); return; } const r = await flush({ force: true }); toast(r.error ? 'Sync error: ' + r.error : navigator.onLine ? `Synced (${r.sent} sent)` : 'No signal. It will sync when you are back online.', 4000); return render(root); }
@@ -67,7 +68,8 @@ export async function render(root) {
   $('#file', root).onchange = async e => {
     const f = e.target.files[0]; if (!f) return;
     if (!await confirmBox(`${mode === 'restore' ? 'Replace all data with' : 'Merge'} "${f.name}"?`, mode === 'restore' ? 'Replace' : 'Merge', mode === 'restore')) return;
-    try { await importBackup(f, mode); toast('Done'); location.reload(); } catch (err) { alert('Import failed: ' + err.message); }
+    try { await importBackup(f, mode); toast('Done'); location.reload(); } catch (err) { await notice('Could not import this file', err.message); }
+    e.target.value = '';
   };
 }
 

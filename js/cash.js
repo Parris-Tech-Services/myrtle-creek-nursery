@@ -47,3 +47,26 @@ export function quickAmounts(due) {
   return [...new Set(ups)].sort((a, b) => a - b).slice(0, 4);
 }
 export const NOTE_BUTTONS = [500, 1000, 2000, 5000, 10000];
+
+/**
+ * A change-friendly float for the next market: mostly $20s and $10s, then $5s, then coins; never $50 or $100 notes.
+ * $100 comes out as 2 x $20, 4 x $10, 2 x $5 and coins. Uses what was counted (`available`) first, then tops up freely.
+ */
+const SHARE = [[2000, 0.40], [1000, 0.40], [500, 0.10], [200, 0.05], [100, 0.03], [50, 0.01], [20, 0.005], [10, 0.003], [5, 0.002]];
+export function floatMix(amount, available = null) {
+  const out = {}; let rest = amount;
+  for (const [d, share] of SHARE) {
+    let n = Math.floor(amount * share / d);
+    if (available) n = Math.min(n, available[d] || 0);
+    n = Math.min(n, Math.floor(rest / d));
+    if (n > 0) { out[d] = n; rest -= n * d; }
+  }
+  for (const limit of [available, null]) {
+    for (const d of SHARE.map(x => x[0])) {
+      let n = Math.floor(rest / d);
+      if (limit) n = Math.min(n, (limit[d] || 0) - (out[d] || 0));
+      if (n > 0) { out[d] = (out[d] || 0) + n; rest -= n * d; }
+    }
+  }
+  return out;
+}

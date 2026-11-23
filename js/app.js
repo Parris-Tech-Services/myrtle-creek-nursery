@@ -4,7 +4,7 @@ import { startSyncLoop, syncChip, flush, refreshPending } from './gsync.js';
 import { backupOverdue } from './syncing.js';
 import * as settings from './settings.js';
 import { overlay } from './ui.js';
-import { $, esc } from './util.js';
+import { $, esc, ymd } from './util.js';
 
 const routes = { sell: ['Sell', () => import('./sell.js')], market: ['Market day', () => import('./market.js')], orders: ['Orders', () => import('./ordersview.js')],
   nursery: ['Nursery', () => import('./nursery.js')], packing: ['Packing', () => import('./packing.js')], reports: ['Reports', () => import('./reports.js')],
@@ -87,6 +87,22 @@ async function welcome() {
   }) };
 }
 
+/** A market day still open from an earlier date (or more than 14 hours old) is probably forgotten: ask once per day. */
+async function checkStaleDay() {
+  const day = await openDay();
+  if (!day || day.staleAsked === ymd()) return;
+  const old = day.date < ymd() || (day.startedAt && Date.now() - day.startedAt > 14 * 3600e3);
+  if (!old) return;
+  await db.marketDays.update(day.id, { staleAsked: ymd() });
+  const o = overlay(`<h3>An earlier market day is still open</h3><p>The market day on ${esc(day.date)} has not been closed.</p>
+    <button class="btn primary big" data-a="close">Close it</button><button class="btn big" data-a="keep">Keep selling in it</button>`);
+  o.onclick = async e => {
+    const a = e.target.closest('button')?.dataset.a; if (!a) return;
+    o.remove();
+    if (a === 'close') { (await import('./market.js')).showReport(day.id); show(); }
+  };
+}
+
 // One hand-lettered heading per screen: the first h2, kept up to date as screens re-render themselves.
 new MutationObserver(() => {
   const main = $('#main'), first = main.querySelector('h2');
@@ -110,6 +126,7 @@ new MutationObserver(() => {
   const w = await welcome();   // the sheet is already up (first run only) before any screen is drawn behind it
   await show();
   await w.done;
+  checkStaleDay();
   startSyncLoop();
   snapshotIfStale().catch(() => {});
 })();

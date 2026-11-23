@@ -61,3 +61,15 @@ test('suggested quantity and a one-line reason', () => {
   assert.equal(suggestQty({ stats: undefined, held: 2, stock: 9 }).qty, 2);
 });
 test('formatting', () => { assert.equal(clock(630), '10:30am'); assert.equal(clock(13 * 60 + 5), '1:05pm'); assert.equal(pct(0.456), '46%'); });
+
+test('packing: demand, shortfall and fallbacks', () => {
+  const stats = productStats([V('1', { a: 10 }, { a: 10 }), V('2', { a: 10 }, { a: 9 })]).a;
+  const here = suggestQty({ stats, lastTaken: 10, lastSold: 9, stock: 4 });
+  assert.equal(here.qty, 4); assert.equal(here.shortfall, here.demand - 4); assert.ok(here.shortfall > 0);
+  const elsewhere = suggestQty({ stats: undefined, fallback: stats, stock: 50 });
+  assert.match(elsewhere.reason, /new here: average across markets/); assert.equal(elsewhere.qty, Math.round(stats.avgSold * 1.2));
+  assert.equal(suggestQty({ stats: undefined, stock: 50, defaultQty: 4 }).qty, 4);
+  assert.equal(suggestQty({ stats: undefined, stock: 3, defaultQty: 4 }).qty, 3);
+  const zero = productStats([V('1', { b: 10 }, { b: 0 })]).b;
+  assert.ok(suggestQty({ stats: zero, everSold: 6, lastTaken: 10, lastSold: 0, stock: 50 }).qty >= 2, 'keeps a minimum for something that has sold here');
+});

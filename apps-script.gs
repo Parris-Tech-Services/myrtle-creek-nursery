@@ -9,7 +9,7 @@
  *   readable tabs    Sales, Market days, ... for sorting, filtering and pivot tables. Column A holds a hidden row id.
  * Every record is an upsert. An older copy never overwrites a newer one (updatedAt decides).
  *
- * Requests: POST {key, action:'push', tabs, items}  -> {ok, acked:[keys], scriptVersion}
+ * Requests: POST {key, action:'push', tabs, items}  -> {ok, acked:[keys], stale:[{key, json}], scriptVersion}
  *           GET  ?key=..&action=ping|counts|export&store=..&offset=..&limit=..
  *           GET  (no parameters) -> friendly page with the connection code (until the app has connected once)
  */
@@ -46,8 +46,8 @@ function doPost(e) {
     if (data.action !== 'push') return json_({ ok: false, error: 'Unknown action' });
     const ss = SpreadsheetApp.getActiveSpreadsheet();
     startHere_(ss);
-    const acked = push_(ss, data.tabs || {}, data.items || []);
-    return json_({ ok: true, acked: acked, scriptVersion: SCRIPT_VERSION });
+    const done = push_(ss, data.tabs || {}, data.items || []);
+    return json_({ ok: true, acked: done.acked, stale: done.stale, scriptVersion: SCRIPT_VERSION });
   } catch (err) {
     return json_({ ok: false, error: String(err), scriptVersion: SCRIPT_VERSION });
   } finally { lock.releaseLock(); }
@@ -175,7 +175,8 @@ function conv_(v, t) {
   if (t === 'date') { const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(v)); return m ? new Date(+m[1], +m[2] - 1, +m[3]) : String(v); }
   if (t === 'time') { const m = /^(\d{1,2}):(\d{2})$/.exec(String(v)); return m ? (+m[1] * 60 + +m[2]) / 1440 : String(v); }
   if (t === 'money' || t === 'num' || t === 'dec') return Number(v);
-  return String(v);
+  const t0 = String(v);
+  return /^[=+\-@]/.test(t0) ? "'" + t0 : t0;   // text that starts with = + - @ would otherwise be read as a formula
 }
 
 /** Creates a readable tab once: bold olive header, frozen row, filter, hidden id column. Returns {sh, cols, idx, fresh, del, created}. */
@@ -203,7 +204,7 @@ function push_(ss, defs, items) {
   const data = dataSheet_(ss);
   const dIdx = {};
   if (data.getLastRow() > 1) data.getRange(2, 1, data.getLastRow() - 1, 3).getValues().forEach(function (r, i) { dIdx[r[0] + '|' + r[1]] = { row: i + 2, updatedAt: Number(r[2]) || 0 }; });
-  const dFresh = [], dDel = [], cache = {}, acked = [];
+  const dFresh = [], dDel = [], cache = {}, acked = [], stale = [];
 
   items.forEach(function (it) {
     try {
@@ -213,7 +214,10 @@ function push_(ss, defs, items) {
         (it.deleteRows || []).forEach(function (r) { const t = tab_(ss, cache, r.tab, defs); if (t && t.idx[r.id]) { t.del.push(t.idx[r.id]); delete t.idx[r.id]; } });
         acked.push(it.key); return;
       }
-      if (ex && ex.updatedAt > it.updatedAt) { acked.push(it.key); return; }   // the sheet already has a newer copy
+      if (ex && ex.updatedAt > it.updatedAt) {   // the sheet already has a newer copy: keep it, and send it back so the app can take it
+        stale.push({ key: it.key, json: data.getRange(ex.row, 4).getValue() });
+        acked.push(it.key); return;
+      }
       if (ex) { data.getRange(ex.row, 1, 1, 4).setValues([[it.store, String(it.id), it.updatedAt, it.json]]); ex.updatedAt = it.updatedAt; }
       else { dFresh.push([it.store, String(it.id), it.updatedAt, it.json]); dIdx[k] = { row: -1, updatedAt: it.updatedAt }; }
       (it.replaceTabs || []).forEach(function (name) {
@@ -246,7 +250,7 @@ function push_(ss, defs, items) {
     if (t.created) sh.autoResizeColumns(2, Math.max(1, t.cols.length));
   });
   arrange_(ss);
-  return acked;
+  return { acked: acked, stale: stale };
 }
 
 function arrange_(ss) {

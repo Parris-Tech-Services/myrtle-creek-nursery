@@ -1,4 +1,4 @@
-import { sum, lineNets } from './util.js';
+import { sum, lineNets, ymd } from './util.js';
 import { productStats, suggestQty, minutesOf } from './insights.js';
 import { reservedByProduct } from './orders.js';
 import { STORES } from './syncing.js';
@@ -23,7 +23,6 @@ db.version(1).stores({
   orders: 'id,status,dueDate',                   // see orders.js
   losses: 'id,marketDayId,locationId,productId', // {productId,qty,reason,note,unitPrice,date,marketDayId|null,locationId}
   soldOut: 'id,marketDayId',                     // {marketDayId,productId,ts}
-  snapshots: 'id',                               // rolling local safety copies (last 5)
   syncState: 'id',                               // {id:'store:id', acked: updatedAt, gone?}
   settings: 'key',
 });
@@ -63,7 +62,6 @@ export async function seedIfEmpty() {
   if (await getSetting('seeded')) return;
   const prods = SEED.flatMap(([category, group, type, names]) => names.map(name => ({
     id: slug(category === CAT ? name : category + '-' + name), type: slug(type), group, category, name, price: null, active: true })));
-  const trees = [['Lemon (Meyer)', 3500], ['Fig', 3000], ['Apple (Pink Lady)', 4000]].map(([name, price]) => ({ id: slug(name), type: 'tree', group: 'tree', category: 'Fruit trees', name, price, active: true }));
   await db.transaction('rw', db.tables, async () => {
     await db.types.bulkPut([{ id: 'punnet', name: 'Punnet', sort: 1 }, { id: 'tube', name: 'Tube', sort: 2 }, { id: 'tree', name: 'Tree', sort: 3 }]);
     await db.groups.bulkPut([
@@ -71,12 +69,11 @@ export async function seedIfEmpty() {
       { id: 'punnet', name: 'Vegetable punnet', sort: 2, unit: 500, deals: [{ qty: 5, price: 2000 }] },
       { id: 'tree', name: 'Tree', sort: 3, unit: 3000, deals: [] },
     ]);
-    await db.products.bulkPut([...prods, ...trees]);
+    await db.products.bulkPut(prods);   // no sample trees and no stock: the owner adds those
     await db.locations.bulkPut([
       { id: NURSERY, name: 'Nursery (near Pambula)' }, { id: 'jamison', name: 'Jamison Markets \u2013 Canberra' },
       { id: 'wyndham', name: 'Wyndham Markets' }, { id: 'pambula', name: 'Pambula pickup \u2013 Tuesdays' }, { id: 'southcoast', name: 'South Coast market' },
     ]);
-    await db.stock.bulkPut([...prods, ...trees].map(p => ({ id: p.id + '|' + NURSERY, productId: p.id, locationId: NURSERY, qty: p.type === 'tree' ? 6 : 12 })));
     await setSetting('seeded', true);
   });
 }
@@ -98,8 +95,8 @@ export const markets = locs => locs.filter(l => l.id !== NURSERY && !l.hidden);
 
 // ---- stock ---------------------------------------------------------------
 export async function adjustStock(productId, delta, loc = NURSERY) {
-  const id = productId + '|' + loc, r = await db.stock.get(id);
-  await db.stock.put({ id, productId, locationId: loc, qty: (r?.qty || 0) + delta });
+  const id = productId + '|' + loc, r = await db.stock.get(id), raw = (r?.qty || 0) + delta;
+  await db.stock.put({ id, productId, locationId: loc, qty: Math.max(0, raw), shortBy: raw < 0 ? -raw : 0 });   // never negative: clamp to 0 and flag how short it is
 }
 export const nurseryStock = async () => Object.fromEntries((await db.stock.toArray()).filter(s => s.locationId === NURSERY).map(s => [s.productId, s.qty]));
 
@@ -120,7 +117,11 @@ export function paymentTotals(sales, extra = []) {
 }
 /** Payments taken against orders while this market day was open. */
 const orderPaymentsForDay = async id => (await db.orders.toArray()).flatMap(o => (o.payments || []).map(p => ({ ...p, customer: o.customer }))).filter(p => p.marketDayId === id);
-export const dayReceipts = async (dayId, sales) => paymentTotals(sales, await orderPaymentsForDay(dayId));
+export const dayReceipts = async (dayId, sales) => {
+  const t = paymentTotals(sales, await orderPaymentsForDay(dayId));
+  for (const m of await db.cashMovements.where('marketDayId').equals(dayId).toArray()) if (m.type === 'repaid' && m.method === 'transfer') t.transfer += m.amount;   // repaid by transfer arrives in the bank
+  return t;
+};
 /** Cash in the float should be: float + cash received + cash repaid - cash taken out. Also totals expenses. */
 export const dayCash = async (day, sales) => {
   const mv = await db.cashMovements.where('marketDayId').equals(day.id).toArray();
@@ -158,18 +159,32 @@ export async function loadVisits(locationId = null) {
   }));
 }
 
-/** Packing list for a market: this market's last 3 visits (sell-through, sold-out times) drive the suggestion. */
-export async function packingPlan(locId) {
+/**
+ * Packing list for a market. This market's last 3 visits drive the suggestion; a market with no history uses the average across
+ * all markets, then a small starting amount. A quantity typed for today (packing override) wins for that market day only.
+ */
+export async function packingPlan(locId, forDate = ymd()) {
   const { products } = await catalog({ activeOnly: true });
   const stock = await nurseryStock();
   const held = reservedByProduct(await db.orders.toArray(), locId);
-  const visits = (await loadVisits(locId)).slice(0, 3);
-  const stats = productStats(visits);
-  const edits = Object.fromEntries((await db.packing.toArray()).filter(p => p.id.startsWith(locId + '|')).map(p => [p.id, p.qty]));
+  const all = await loadVisits(null), here = all.filter(v => v.location === locId);
+  const stats = productStats(here.slice(0, 3)), ever = productStats(here), statsAll = productStats(all.slice(0, 6));
+  const edits = Object.fromEntries((await db.packing.toArray()).filter(p => p.id.startsWith(locId + '|') && p.date === forDate).map(p => [p.id, p.qty]));
   return products.map(p => {
-    const st = stats[p.id], lastSold = visits[0]?.sold[p.id] || 0, lastTaken = visits[0]?.taken[p.id] || 0, heldHere = held[p.id] || 0;
-    const { qty: suggested, reason } = suggestQty({ stats: st, lastTaken, lastSold, held: heldHere, stock: Math.max(0, stock[p.id] || 0) });
+    const st = stats[p.id], lastSold = here[0]?.sold[p.id] || 0, lastTaken = here[0]?.taken[p.id] || 0, heldHere = held[p.id] || 0;
+    const r = suggestQty({ stats: st, everSold: ever[p.id]?.sold || 0, fallback: statsAll[p.id], lastTaken, lastSold, held: heldHere, stock: Math.max(0, stock[p.id] || 0), defaultQty: all.length ? 0 : 4 });
     const edited = edits[locId + '|' + p.id];
-    return { product: p, lastTaken, lastSold, avg: st?.avgSold || 0, soldOut: st?.soldOut ? st.avgSoldOutMin : null, soldOutVisits: st?.soldOut || 0, held: heldHere, suggested, reason, edited, qty: edited ?? suggested, nursery: stock[p.id] || 0, visits: visits.length };
+    return { product: p, lastTaken, lastSold, avg: st?.avgSold || 0, soldOut: st?.soldOut ? st.avgSoldOutMin : null, soldOutVisits: st?.soldOut || 0, held: heldHere, suggested: r.qty, reason: r.reason, demand: r.demand, shortfall: r.shortfall, edited, qty: edited ?? r.qty, nursery: stock[p.id] || 0, visits: here.slice(0, 3).length };
   });
+}
+
+/** What the nursery should be growing for: typical demand per market visit (all markets, last 6 visits) plus everything held for orders. */
+export async function nurseryNeeds() {
+  const stats = productStats((await loadVisits(null)).slice(0, 6)), held = reservedByProduct(await db.orders.toArray()), stock = await nurseryStock(), out = {};
+  for (const [id, s] of Object.entries(stats)) {
+    const demand = Math.round(s.avgSold * 1.2) + (held[id] || 0), have = stock[id] || 0;
+    if (demand > have) out[id] = { demand, have, short: demand - have };
+  }
+  for (const [id, n] of Object.entries(held)) if (!out[id] && n > (stock[id] || 0)) out[id] = { demand: n, have: stock[id] || 0, short: n - (stock[id] || 0) };
+  return out;
 }

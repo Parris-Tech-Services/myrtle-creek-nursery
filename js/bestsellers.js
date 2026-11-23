@@ -2,7 +2,7 @@ import { catalog, loadVisits, markets } from './db.js';
 import { productStats, rollupStats, splitPeriods, trend, rank, highlights, ARROW, clock, pct } from './insights.js';
 import { esc, money } from './util.js';
 
-const st = { loc: null, n: 6, by: 'sellThrough', view: 'product' };
+const st = { loc: null, n: 6, by: 'sellThrough', view: 'product', all: false };
 const bar = x => (x == null ? '-' : `<span class="bar"><i style="width:${Math.min(100, Math.round(x * 100))}%"></i></span> ${pct(x)}`);
 
 export async function renderBest(el) {
@@ -15,7 +15,8 @@ export async function renderBest(el) {
   const controls = `<div class="row"><label><span>Market</span><select id="b-loc">${opts.map(([k, l]) => `<option value="${k}" ${k === (st.loc ?? '') ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select></label>
     <label><span>Visits</span><select id="b-n">${[[3, 'Last 3'], [6, 'Last 6'], [10, 'Last 10'], [0, 'All']].map(([k, l]) => `<option value="${k}" ${k === st.n ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
     <label><span>Rank by</span><select id="b-by">${[['sellThrough', '% sold'], ['units', 'Units sold'], ['revenue', 'Revenue $']].map(([k, l]) => `<option value="${k}" ${k === st.by ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
-    <label><span>Show</span><select id="b-view"><option value="product" ${st.view === 'product' ? 'selected' : ''}>Products</option><option value="category" ${st.view === 'category' ? 'selected' : ''}>Sub-categories</option></select></label></div>`;
+    <label><span>Show</span><select id="b-view"><option value="product" ${st.view === 'product' ? 'selected' : ''}>Products</option><option value="category" ${st.view === 'category' ? 'selected' : ''}>Sub-categories</option></select></label>
+    <label class="chk"><input type="checkbox" id="b-all" ${st.all ? 'checked' : ''}><span>Show all (including products with no sales)</span></label></div>`;
   const head = `<h2>Best sellers</h2><p class="muted">% sold = sold divided by taken, so it is fair to products you bring fewer of. Based on closed market days.</p>${controls}`;
   const table = (cols, rows) => `<div class="scroll"><table class="t"><tr>${cols.map(c => `<th>${c}</th>`).join('')}</tr>${rows.map(r => `<tr>${r.map(c => `<td>${c}</td>`).join('')}</tr>`).join('') || `<tr><td colspan="${cols.length}">No closed market days yet.</td></tr>`}</table></div>`;
 
@@ -34,7 +35,7 @@ export async function renderBest(el) {
   const here = all.filter(v => v.location === st.loc), { current, previous } = splitPeriods(here, n);
   const cur = st.view === 'category' ? rollupStats(current, id => pmap[id]?.category || 'Other') : productStats(current);
   const prev = st.view === 'category' ? rollupStats(previous, id => pmap[id]?.category || 'Other') : productStats(previous);
-  const rows = rank(Object.values(cur), st.by).map(s => [esc(st.view === 'category' ? s.id : nm(s.id)), s.sold, money(s.revenue), s.avgSold.toFixed(1), bar(s.sellThrough),
+  const rows = rank(Object.values(cur).filter(s => st.all || s.sold > 0), st.by).map(s => [esc(st.view === 'category' ? s.id : nm(s.id)), s.sold, money(s.revenue), s.avgSold.toFixed(1), bar(s.sellThrough),
     st.view === 'category' ? '-' : s.soldOut ? `${s.soldOut}x, avg ${clock(s.avgSoldOutMin)}` : '', s.lost || '', ARROW[trend(s, prev[s.id])] || '-']);
 
   const others = Object.fromEntries(m.filter(l => l.id !== st.loc).map(l => [l.id, productStats(all.filter(v => v.location === l.id).slice(0, n))]));
@@ -52,6 +53,7 @@ export async function renderBest(el) {
 function wire(el) {
   el.onchange = e => {
     if (e.target.id === 'b-loc') st.loc = e.target.value; if (e.target.id === 'b-n') st.n = +e.target.value;
+    if (e.target.id === 'b-all') st.all = e.target.checked;
     if (e.target.id === 'b-by') st.by = e.target.value; if (e.target.id === 'b-view') st.view = e.target.value;
     renderBest(el);
   };

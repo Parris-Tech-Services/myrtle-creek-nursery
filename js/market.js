@@ -1,11 +1,12 @@
 import { db, getPeople, setPeople, catalog, openDay, salesForDay, soldByProduct, dayReceipts, dayCash, owed, adjustStock, nurseryStock, packingPlan, lossesForDay, lostByProduct, LOSS_REASONS, NURSERY } from './db.js';
 import { unitPriceFor } from './pricing.js';
-import { DENOMS, denomLabel, countTotal, breakdown, diffCounts } from './cash.js';
+import { DENOMS, denomLabel, countTotal, floatMix, diffCounts } from './cash.js';
+import { closeDayDb, reopenDayDb, useExpectedDb } from './stockclose.js';
 import { flush, ackedSet, getConn } from './gsync.js';
-import { esc, money, uid, sum, ymd, fmtDate, $, $$, groupBy } from './util.js';
+import { esc, money, uid, sum, ymd, fmtDate, $, $$, groupBy, parseMoney, clampQty } from './util.js';
 import { showPostDialog } from './postview.js';
 import { personHours, displayNames } from './staff.js';
-import { askForm, toast, undoToast, overlay, confirmBox, stepperHtml, stepperClick } from './ui.js';
+import { askForm, toast, undoToast, overlay, confirmBox, stepperHtml, stepperClick, guard } from './ui.js';
 import { checklistCard, wireChecklist } from './checklist.js';
 
 let mode = 'main', viewDayId = null, endStep = 1;
@@ -21,18 +22,18 @@ const saveDay = async (day, patch) => {
 };
 
 /** Record plant losses at a market day (day given) or at the nursery (day null: also reduces nursery stock). */
-export async function recordLoss(day) {
+export const recordLoss = day => guard('loss', async () => {
   const { products, gmap } = await catalog({ activeOnly: true });
   const v = await askForm(day ? 'Record loss at this market' : 'Record loss at the nursery', [
     { name: 'productId', label: 'Product', type: 'select', options: products.map(p => [p.id, p.label]) },
-    { name: 'qty', label: 'Quantity', type: 'number' }, { name: 'reason', label: 'Reason', type: 'select', options: LOSS_REASONS }, { name: 'note', label: 'Note' }], { qty: 1, reason: 'dead' });
+    { name: 'qty', label: 'Quantity', type: 'number', min: 1 }, { name: 'reason', label: 'Reason', type: 'select', options: LOSS_REASONS }, { name: 'note', label: 'Note' }], { qty: 1, reason: 'dead' });
   if (!v || !(v.qty > 0)) return false;
-  const p = products.find(x => x.id === v.productId), qty = Math.round(v.qty);
+  const p = products.find(x => x.id === v.productId), qty = clampQty(v.qty, 1);
   const loss = { id: uid(), productId: p.id, qty, reason: v.reason, note: v.note, unitPrice: unitPriceFor(p, gmap), date: day?.date || ymd(), ts: Date.now(), marketDayId: day?.id || null, locationId: day?.location || NURSERY };
   await db.transaction('rw', db.losses, db.stock, async () => { await db.losses.add(loss); if (!day) await adjustStock(p.id, -qty); });
   undoToast(`${qty} x ${p.label} lost`, async () => { await db.transaction('rw', db.losses, db.stock, async () => { await db.losses.delete(loss.id); if (!day) await adjustStock(p.id, qty); }); window.dispatchEvent(new Event('hashchange')); });
   return true;
-}
+});
 
 export async function render(root) {
   const open = await openDay();
@@ -58,6 +59,8 @@ function wireOwed(root, day) {
       { name: 'amount', label: 'Amount paid back', type: 'money' }, { name: 'method', label: 'Paid back by', type: 'select', options: [['transfer', 'Transfer / PayID'], ['cash', 'Cash into the float (counts toward the open day)']] }, { name: 'date', label: 'Date repaid', type: 'date' }],
       { amount: o.list[0]?.remaining, date: ymd(), linksTo: o.list[0]?.id, method: 'transfer' });
     if (!v || v.amount <= 0) return;
+    const owing = o.list.find(m => m.id === v.linksTo)?.remaining ?? 0;
+    if (v.amount > owing) return toast(`That is more than the ${money(owing)} owed on this one.`, 4000);
     await db.cashMovements.add({ id: uid(), marketDayId: day?.id || null, type: 'repaid', linksTo: v.linksTo, amount: v.amount, method: v.method, date: v.date, note: v.method === 'cash' ? 'Repaid in cash' : 'Repaid by transfer / PayID', ts: Date.now() });
     toast('Repayment recorded'); render(root);
   });
@@ -112,10 +115,10 @@ async function expenseForm(day) {
   const usual = ((await db.settings.get('stallFees'))?.value || {})[day.location] || 0;   // remembered per location
   const v = await askForm('Cash out / expense', [
     { name: 'category', label: 'What is it', type: 'select', options: EXPENSE }, { name: 'amount', label: 'Amount', type: 'money', hint: had ? '' : 'Stall fee is prefilled with the usual fee here. Change the amount for other expenses.' },
-    { name: 'method', label: 'Paid from', type: 'select', options: [['cash', 'Float'], ['card', 'Card'], ['transfer', 'Transfer / PayID']] }, { name: 'note', label: 'Note (e.g. bought pots)' }],
+    { name: 'method', label: 'Paid from', type: 'select', options: [['cash', 'Float'], ['card', 'Card'], ['transfer', 'Transfer / PayID']], showWhen: ['category', ['stallfee', 'fuel', 'supplies', 'other']] }, { name: 'note', label: 'Note (e.g. bought pots)' }],
     { method: 'cash', category: had ? 'fuel' : 'stallfee', amount: had ? 0 : usual });
   if (!v || v.amount <= 0) return false;
-  const fromFloat = v.method === 'cash' || v.category === 'borrowed';
+  const fromFloat = v.category === 'borrowed' || v.method === 'cash';   // a borrowed amount always comes out of the float
   await db.cashMovements.add({ id: uid(), marketDayId: day.id, type: fromFloat ? 'cashOut' : 'expense', category: v.category, method: fromFloat ? 'cash' : v.method, amount: v.amount, note: v.note, date: day.date, ts: Date.now() });
   if (v.category === 'stallfee') { const m = (await db.settings.get('stallFees'))?.value || {}; await db.settings.put({ key: 'stallFees', value: { ...m, [day.location]: v.amount } }); }
   return true;
@@ -134,14 +137,14 @@ async function mainStart(root) {
   $('#post', root).onclick = () => showPostDialog();
   $('#start', root).onclick = async () => {
     const v = await askForm('Start market day', [
-      { name: 'date', label: 'Date', type: 'date' }, { name: 'location', label: 'Location', type: 'select', options: locations.filter(l => !l.hidden).map(l => [l.id, l.name]) },
+      { name: 'date', label: 'Date', type: 'date' }, { name: 'location', label: 'Location', type: 'select', options: locations.filter(l => !l.hidden && l.id !== NURSERY).map(l => [l.id, l.name]) },
       { name: 'notes', label: 'Notes', type: 'textarea' }],
-      { date: ymd(), location: locations.find(l => l.id !== NURSERY)?.id }, { submit: 'Next: count the float' });
+      { date: ymd(), location: locations.find(l => l.id !== NURSERY && !l.hidden)?.id }, { submit: 'Next: count the float' });
     if (!v) return;
     const next = (await db.settings.get('nextFloat'))?.value;
     const counts = await cashCalc(next ? `Opening float (prefilled from the ${money(next.amount)} you kept last time; change if different)` : 'Count the opening float', next?.counts || {}, { skip: true });
     if (!counts) return;
-    await saveDay({ id: uid(), status: 'open', countedCash: null, closedAt: null }, counts.later ? { ...v, floatCounts: null, float: 0, floatPending: true } : { ...v, floatCounts: counts, float: countTotal(counts) });
+    await saveDay({ id: uid(), status: 'open', countedCash: null, closedAt: null, startedAt: Date.now() }, counts.later ? { ...v, floatCounts: null, float: 0, floatPending: true } : { ...v, floatCounts: counts, float: countTotal(counts) });
     toast('Day started'); go(root, 'load');
   };
   root.onclick = async e => {
@@ -149,7 +152,7 @@ async function mainStart(root) {
     if (b.dataset.r) go(root, 'end', b.dataset.r);
     if (b.dataset.reopen) {
       if (await openDay()) return toast('Close the open day first');
-      await saveDay(await db.marketDays.get(b.dataset.reopen), { status: 'open', closedAt: null }); render(root);
+      await reopenDayDb(b.dataset.reopen); flush(); render(root);
     }
   };
   wireOwed(root, null);
@@ -209,15 +212,19 @@ async function loadView(root, day) {
   root.innerHTML = `<div class="card"><h2>Load stock</h2><p>${esc(lmap[day.location]?.name)}. How many of each are you taking? Prefilled from the packing list. Saving takes them off nursery stock.</p>
     ${types.filter(t => g[t.id]).map(t => `<h3>${esc(t.name)}s</h3>${g[t.id].map(p => `<div class="kv"><span>${esc(p.label)} <small>nursery ${stock[p.id] || 0}</small></span>
       ${stepperHtml(`data-p="${p.id}"`, have[p.id]?.taken ?? plan[p.id]?.qty ?? 0, p.label)}</div>`).join('')}`).join('')}
+    <div class="row"><button class="btn" id="takeall">Take all nursery stock</button></div>
     <div class="row"><button class="btn ghost" id="back">Back</button><button class="btn primary big" id="save">Save loaded stock</button></div></div>`;
-  root.onclick = e => stepperClick(e);
+  root.onclick = e => {
+    if (stepperClick(e)) return;
+    if (e.target.id === 'takeall') $$('input[data-p]', root).forEach(i => { i.value = clampQty(stock[i.dataset.p] || 0); });
+  };
   $('#back', root).onclick = () => go(root, 'main');
-  $('#save', root).onclick = async () => {
+  $('#save', root).onclick = () => guard('load', async () => {
     const changes = [];
     await db.transaction('rw', db.dayStock, db.stock, async () => {
       for (const i of $$('input[data-p]', root)) {
-        const p = i.dataset.p, n = Math.max(0, Math.round(+i.value || 0)), old = have[p]?.taken || 0;
-        if (n === old && have[p]) continue;
+        const p = i.dataset.p, n = clampQty(i.value), old = have[p]?.taken || 0;
+        if (n === old && (have[p] || n === 0)) continue;
         changes.push({ p, n, old, ret: have[p]?.returned ?? null, had: !!have[p] });
         await adjustStock(p, old - n);
         await db.dayStock.put({ id: day.id + '|' + p, marketDayId: day.id, productId: p, taken: n, returned: have[p]?.returned ?? null });
@@ -227,7 +234,7 @@ async function loadView(root, day) {
     undoToast('Stock loaded', async () => db.transaction('rw', db.dayStock, db.stock, async () => {
       for (const c of changes) { await adjustStock(c.p, c.n - c.old); c.had ? await db.dayStock.put({ id: day.id + '|' + c.p, marketDayId: day.id, productId: c.p, taken: c.old, returned: c.ret }) : await db.dayStock.delete(day.id + '|' + c.p); }
     }));
-  };
+  });
 }
 
 /** Big-number cash counter for AUD notes and coins. Resolves counts {denom: n} or null if cancelled. */
@@ -261,22 +268,24 @@ async function endView(root, day) {
   const rows = products.filter(p => ds[p.id]?.taken > 0 || sold[p.id] > 0 || lost[p.id] > 0);
   const rowsCash = diffCounts(day.floatCounts, day.closeCounts);
   const closed = day.status === 'closed', salesTotal = sum(sales, s => s.total), step = closed ? 0 : endStep;
+  const mix = day.keepFloat != null && !closed ? (await db.settings.get('nextFloat'))?.value?.counts ?? floatMix(day.keepFloat, day.closeCounts) : null;
   const show = n => closed || step === n;
 
   /** Status of one product row. Oversold (sold + lost more than loaded) is flagged even before a returned count is typed. */
   const status = (p, v) => {
     const taken = ds[p]?.taken || 0, over = (sold[p] || 0) + (lost[p] || 0) - taken;
-    if (v === '' || v == null) return over > 0 ? { text: `oversold by ${over} (sold more than loaded)`, cls: 'bad', bad: 1 } : { text: '', cls: '', missing: 1 };
+    if (v === '' || v == null) return over > 0 ? { text: `oversold by ${over} (sold more than loaded)`, cls: 'bad', bad: 1, missing: 1 } : { text: '', cls: '', missing: 1 };
     const d = taken - +v - (sold[p] || 0) - (lost[p] || 0);
     return { text: d === 0 ? 'OK' : d > 0 ? `${d} unaccounted` : over > 0 ? `oversold by ${over} (sold more than loaded)` : `${-d} more gone than recorded`, cls: d ? 'bad' : 'ok', bad: d ? 1 : 0 };
   };
   const tally = () => rows.reduce((t, p) => { const s = status(p.id, ds[p.id]?.returned); return { bad: t.bad + (s.bad || 0), missing: t.missing + (s.missing || 0) }; }, { bad: 0, missing: 0 });
-  const t0 = tally(), issues = [t0.missing && `${t0.missing} product(s) have no home count`, t0.bad && `${t0.bad} product(s) do not add up`].filter(Boolean);
+  const t0 = tally();
 
   const s1 = `<h3>${closed ? 'Stock' : 'Step 1. Count what is coming home'}</h3><p class="muted">Enter how many of each are coming back. Taken minus returned should equal sold plus lost.</p>
     <table class="t" id="rec"><tr><th>Product</th><th>Taken</th><th>Sold</th><th>Lost</th><th>Coming home</th><th></th></tr>
     ${rows.map(p => { const s = status(p.id, ds[p.id]?.returned); return `<tr data-p="${p.id}"><td>${esc(p.label)}</td><td>${ds[p.id]?.taken || 0}</td><td>${sold[p.id] || 0}</td><td>${lost[p.id] || 0}</td>
       <td>${stepperHtml(`data-ret="${p.id}"`, ds[p.id]?.returned ?? '', p.label)}</td><td class="flag ${s.cls}">${esc(s.text)}</td></tr>`; }).join('') || '<tr><td colspan=6>No stock loaded or sold.</td></tr>'}</table>
+    ${!closed && t0.missing ? `<div class="banner">${t0.missing} product(s) have no coming-home count. <button class="btn small" id="useexp">Everything sold: use expected</button></div>` : ''}
     <div class="row"><button class="btn" id="loss">Record a loss</button></div>`;
   const s2 = `<h3>${closed ? 'Cash' : 'Step 2. Count the cash'}</h3>
     <div class="kv"><span>Opening float</span><b>${money(day.float)}</b></div>
@@ -286,19 +295,21 @@ async function endView(root, day) {
     <div class="kv"><span>Over (+) or short (-)</span><b id="cdiff">${day.countedCash == null ? '-' : money(day.countedCash - expected)}</b></div>
     ${rowsCash.length ? `<table class="t"><tr><th>Note/coin</th><th>Before</th><th>After</th><th>Change</th></tr>${rowsCash.map(r => `<tr><td>${denomLabel(r.denom)}</td><td>${r.before}</td><td>${r.after}</td><td>${r.change > 0 ? '+' : ''}${r.change} (${money(r.value)})</td></tr>`).join('')}</table>` : ''}
     <label class="kv"><span>Float to keep for next market (optional)</span><input class="num wide" id="keep" inputmode="decimal" value="${day.keepFloat == null ? '' : (day.keepFloat / 100).toFixed(2)}" placeholder="0.00"></label>
-    ${day.keepFloat != null && day.countedCash != null ? `<div class="kv"><span>Banked (counted - kept)</span><b>${money(day.countedCash - day.keepFloat)}</b></div>` : ''}`;
+    ${day.keepFloat != null && day.countedCash != null ? `<div class="kv"><span>Banked (counted - kept)</span><b>${money(day.countedCash - day.keepFloat)}</b></div>` : ''}
+    ${mix ? `<h4>Next float, in notes and coins</h4><p class="muted">Change-friendly. Adjust if you like.</p>${[2000, 1000, 500, 200, 100, 50, 20, 10, 5].map(d => `<div class="kv"><span class="den">${denomLabel(d)}</span>${stepperHtml(`data-mix="${d}"`, mix[d] || '', denomLabel(d))}</div>`).join('')}<div class="kv"><span>Total</span><b>${money(countTotal(mix))}</b></div>` : ''}`;
   const s3 = `<h3>${closed ? 'Card and Transfer / PayID' : 'Step 3. Card and Transfer / PayID'}</h3><p class="muted">Check these against the card terminal and your bank.</p>
     <div class="kv"><span>Card received</span><b>${money(pay.card)}</b></div><div class="kv"><span>Transfer / PayID received</span><b>${money(pay.transfer)}</b></div>
     <p class="muted">Includes payments taken on orders while this day was open.</p>`;
   const s4 = `<h3>${closed ? 'Summary' : 'Step 4. Summary and close'}</h3>
     ${!closed && day.countedCash == null ? '<div class="banner">Cash not counted yet <button class="btn small" id="gocount">Count now</button></div>' : ''}
-    ${!closed && issues.length ? `<div class="banner">Needs a look: ${issues.join(', ')}. You can still close the day.</div>` : ''}
+    ${!closed && t0.missing ? `<div class="banner">${t0.missing} product(s) have no coming-home count. <button class="btn small" id="useexp">Everything sold: use expected</button></div>` : ''}
+    ${!closed && t0.bad ? `<div class="banner">${t0.bad} product(s) do not add up. You can still close the day.</div>` : ''}
     <div class="kv"><span>Sales</span><b>${money(salesTotal)}</b></div>
     ${sum(sales, x => x.rounding || 0) ? `<div class="kv"><span>Cash rounding to 5c (already in the cash total)</span><b>${money(sum(sales, x => x.rounding || 0))}</b></div>` : ''}
     <div class="kv"><span>Expenses (stall fee, fuel, supplies, other)</span><b>${money(expenses)}</b></div>
     <div class="kv"><span>Net (sales - expenses)</span><b>${money(salesTotal - expenses)}</b></div>`;
   const nav = closed ? `<div class="row"><button class="btn ghost" id="back">Back</button><button class="btn" id="reopen">Reopen day</button></div>`
-    : `<div class="row"><button class="btn ghost" id="prev">Back</button>${step < 4 ? `<button class="btn primary big" id="next">Next: ${STEPS[step]}</button>` : '<button class="btn primary big" id="close">Close day</button>'}</div>`;
+    : `<div class="row"><button class="btn ghost" id="prev">Back</button>${step < 4 ? `<button class="btn primary big" id="next">Next: ${STEPS[step]}</button>` : `<button class="btn primary big" id="close" ${t0.missing ? 'disabled' : ''}>Close day</button>`}</div>`;
   root.innerHTML = `<div class="card"><h2>${closed ? 'Report' : 'End of day'}: ${esc(lmap[day.location]?.name)}</h2><p>${fmtDate(day.date)} &middot; ${closed ? 'closed' : 'open'}
     ${day.weather ? ' &middot; ' + esc(day.weather) : ''}${day.crowd ? ' &middot; crowd ' + day.crowd + '/5' : ''}</p>
     ${closed ? '' : `<ol class="steps" aria-label="Progress">${STEPS.map((s, i) => `<li class="${i + 1 === step ? 'on' : i + 1 < step ? 'done' : ''}" ${i + 1 === step ? 'aria-current="step"' : ''}>${i + 1}. ${s}</li>`).join('')}</ol>`}
@@ -310,20 +321,33 @@ async function endView(root, day) {
     if (await notesChange(e, day, root)) return;
     const i = e.target;
     if (i.dataset.ret) {
-      const p = i.dataset.ret, old = ds[p]?.returned ?? null, n = i.value === '' ? null : Math.max(0, Math.round(+i.value));
-      const apply = async v => db.transaction('rw', db.dayStock, db.stock, async () => {
+      const p = i.dataset.ret, old = ds[p]?.returned ?? null, n = i.value === '' ? null : clampQty(i.value);
+      const apply = v => guard('ret:' + p, () => db.transaction('rw', db.dayStock, db.stock, async () => {
         await adjustStock(p, (v ?? 0) - (ds[p]?.returned ?? 0));
         await db.dayStock.put({ id: day.id + '|' + p, marketDayId: day.id, productId: p, taken: ds[p]?.taken || 0, returned: v });
         ds[p] = { ...(ds[p] || { taken: 0 }), returned: v };
-      });
+      }));
       await apply(n);
       undoToast('Saved', async () => { await apply(old); const inp = $(`input[data-ret="${p}"]`, root); if (inp) inp.value = old ?? ''; refresh(); });
     }
-    if (i.id === 'counted') { await saveDay(day, { countedCash: i.value === '' ? null : Math.round(parseFloat(i.value) * 100) }); return render(root); }
+    if (i.id === 'counted') {
+      const c = i.value.trim() === '' ? null : parseMoney(i.value);
+      if (i.value.trim() !== '' && (c === null || c < 0)) { toast('Enter an amount like 150.00', 3500); return render(root); }
+      await saveDay(day, { countedCash: c, banked: c == null || day.keepFloat == null ? null : c - day.keepFloat }); return render(root);
+    }
     if (i.id === 'keep') {
-      const keep = i.value === '' ? null : Math.round(parseFloat(i.value) * 100);
+      const keep = i.value.trim() === '' ? null : parseMoney(i.value);
+      if (i.value.trim() !== '' && (keep === null || keep < 0)) { toast('Enter an amount like 100.00', 3500); return render(root); }
       await saveDay(day, { keepFloat: keep, banked: keep == null || day.countedCash == null ? null : day.countedCash - keep });
-      if (keep != null) await db.settings.put({ key: 'nextFloat', value: { amount: keep, counts: breakdown(keep, day.closeCounts) } }); else await db.settings.delete('nextFloat');
+      if (keep != null) await db.settings.put({ key: 'nextFloat', value: { amount: keep, counts: floatMix(keep, day.closeCounts) } }); else await db.settings.delete('nextFloat');
+      return render(root);
+    }
+    if (i.dataset.mix) {   // the next float's notes and coins are editable
+      const counts = { ...((await db.settings.get('nextFloat'))?.value?.counts ?? floatMix(day.keepFloat, day.closeCounts)) };
+      counts[i.dataset.mix] = clampQty(i.value); if (!counts[i.dataset.mix]) delete counts[i.dataset.mix];
+      const total = countTotal(counts);
+      await db.settings.put({ key: 'nextFloat', value: { amount: total, counts } });
+      await saveDay(day, { keepFloat: total, banked: day.countedCash == null ? null : day.countedCash - total });
       return render(root);
     }
     refresh();
@@ -342,17 +366,18 @@ async function endView(root, day) {
       const c = await cashCalc('Count the cash at close', day.closeCounts || {}); if (!c) return;
       const t = countTotal(c), keep = day.keepFloat;
       await saveDay(day, { closeCounts: c, countedCash: t, banked: keep == null ? null : t - keep });
-      if (keep != null) await db.settings.put({ key: 'nextFloat', value: { amount: keep, counts: breakdown(keep, c) } });
+      if (keep != null) await db.settings.put({ key: 'nextFloat', value: { amount: keep, counts: floatMix(keep, c) } });
       return render(root);
     }
+    if (b.id === 'useexp') { await useExpectedDb(day.id); return render(root); }
     if (b.id === 'reopen') {
       if (await openDay()) return toast('Close the open day first');
-      await saveDay(day, { status: 'open', closedAt: null }); endStep = 1; return go(root, 'main');
+      await reopenDayDb(day.id); flush(); endStep = 1; return go(root, 'main');
     }
-    if (b.id === 'close') {   // no "are you sure": closing is undoable
-      await saveDay(day, { status: 'closed', closedAt: Date.now() });
+    if (b.id === 'close') return guard('close:' + day.id, async () => {   // no "are you sure": closing is undoable
+      await closeDayDb(day.id); flush();
       endStep = 1; go(root, 'main');
-      undoToast('Day closed. Remember to back up.', async () => { await saveDay(day, { status: 'open', closedAt: null }); render(root); });
-    }
+      undoToast('Day closed. Remember to back up.', async () => { await reopenDayDb(day.id); flush(); render(root); });
+    });
   };
 }

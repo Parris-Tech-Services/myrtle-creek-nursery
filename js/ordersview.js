@@ -1,9 +1,10 @@
-import { db, catalog, openDay, adjustStock, markets, NURSERY } from './db.js';
+import { db, catalog, openDay, markets } from './db.js';
+import { takePaymentDb, collectDb, uncollectDb } from './orderflow.js';
 import { dealsFor, unitPriceFor } from './pricing.js';
 import { orderTotals, paidTotal, balance, paymentStatus, filterOrders, liability } from './orders.js';
 import { flush } from './gsync.js';
 import { esc, money, uid, ymd, fmtDate, groupBy, $, $$ } from './util.js';
-import { askForm, choose, toast, undoToast, overlay, confirmBox, stepperHtml, stepperClick } from './ui.js';
+import { askForm, choose, toast, undoToast, overlay, confirmBox, stepperHtml, stepperClick, guard } from './ui.js';
 
 const FUL = { market: 'Pickup at market', pambula: 'Pickup at Pambula', delivery: 'Drop-off / delivery' };
 const METHODS = [['cash', 'Cash'], ['card', 'Card'], ['transfer', 'Transfer / PayID']];
@@ -13,61 +14,25 @@ async function saveOrder(o) {
   flush();
 }
 
-async function takePayment(o, { amount, method, date = ymd() }) {
-  const day = await openDay(); // counts toward the open day's cash/card/transfer reconciliation
-  o.payments = [...(o.payments || []), { id: uid(), amount, method, date, ts: Date.now(), marketDayId: day?.id || null }];
-  await saveOrder(o);
-}
-
-/** Day a collection is booked against. Market pickups use the open day at that market; others get a quiet day of their own. */
-async function dayForCollection(o) {
-  const loc = o.fulfilment === 'pambula' ? 'pambula' : o.fulfilment === 'delivery' ? NURSERY : o.locationId;
-  const open = await openDay();
-  if (open && open.location === loc) return { day: open, fromStock: 'day', created: false };
-  const date = ymd();
-  let day = (await db.marketDays.where('location').equals(loc).toArray()).find(d => d.date === date && d.auto);
-  const created = !day;
-  day ||= { id: uid(), date, location: loc, status: 'closed', float: 0, countedCash: null, notes: 'Order collections', auto: true, closedAt: Date.now() };
-  return { day, fromStock: 'nursery', created };
-}
-
 /** Counts the units as sold on the collection day. Money was already counted when paid, so the sale carries no payments. */
-async function collectOrder(o) {
-  if (balance(o) > 0) {
-    const c = await choose(`Collect ${o.customer}'s order`, [['pay', `Take ${money(balance(o))} now, then collect`], ['owing', 'Collect without payment (balance stays owing)']], `They still owe ${money(balance(o))}. How do you want to settle it?`);
+const collectOrder = o => guard('collect:' + o.id, async () => {
+  const fresh = await db.orders.get(o.id);
+  if (!fresh || fresh.status !== 'held') return false;   // a second tap on Mark collected does nothing
+  if (balance(fresh) > 0) {
+    const c = await choose(`Collect ${fresh.customer}'s order`, [['pay', `Take ${money(balance(fresh))} now, then collect`], ['owing', 'Collect without payment (balance stays owing)']], `They still owe ${money(balance(fresh))}. How do you want to settle it?`);
     if (!c) return false;
     if (c === 'pay') {
-      const m = await choose(`Payment of ${money(balance(o))}`, METHODS); if (!m) return false;
-      await takePayment(o, { amount: balance(o), method: m });
+      const m = await choose(`Payment of ${money(balance(fresh))}`, METHODS); if (!m) return false;
+      await takePaymentDb(fresh.id, { amount: balance(fresh), method: m });
     }
   }
-  const { day, fromStock, created } = await dayForCollection(o);
-  const sale = {
-    id: uid(), marketDayId: day.id, timestamp: Date.now(), lines: o.lines.map(l => ({ ...l })), dealSavings: o.dealSavings || 0, savingsByGroup: o.savingsByGroup || {},
-    total: o.items ?? o.total, paymentMethod: 'order', payments: [], voided: false, fromOrder: o.id,
-  };
-  Object.assign(o, { status: 'collected', collectedAt: Date.now(), collectedDate: ymd(), collectedDayId: day.id, collectedSaleId: sale.id, stockFrom: fromStock });
-  await db.transaction('rw', db.sales, db.orders, db.marketDays, db.stock, async () => {
-    if (created) { await db.marketDays.put(day); }
-    await db.sales.add(sale);
-    if (fromStock === 'nursery') for (const l of o.lines) if (l.productId !== 'misc') await adjustStock(l.productId, -l.qty);
-    await db.orders.put(o);
-  });
+  const r = await collectDb(fresh.id);
+  if (!r.ok) return false;
   flush();
-  undoToast(`Collected: ${o.customer}`, () => uncollect(o.id));
+  undoToast(`Collected: ${fresh.customer}`, async () => { await uncollectDb(fresh.id); flush(); });
   return true;
-}
-
-async function uncollect(id) {
-  const o = await db.orders.get(id);
-  await db.transaction('rw', db.sales, db.orders, db.stock, async () => {
-    await db.sales.update(o.collectedSaleId, { voided: true, voidedAt: Date.now() });
-    if (o.stockFrom === 'nursery') for (const l of o.lines) if (l.productId !== 'misc') await adjustStock(l.productId, l.qty);
-    Object.assign(o, { status: 'held', collectedAt: null, collectedDate: null, collectedDayId: null, collectedSaleId: null, stockFrom: null });
-    await db.orders.put(o);
-  });
-  flush();
-}
+});
+const uncollect = id => guard('uncollect:' + id, async () => { await uncollectDb(id); flush(); });
 
 /** Full-screen item picker with live deal pricing. Resolves lines or null. */
 function editItems(order, cat) {
@@ -162,9 +127,11 @@ export async function render(root) {
     else if (d.u) { if (await confirmBox('Undo this collection? The sale is voided and stock restored.', 'Undo collection', true)) { await uncollect(d.u); toast('Collection undone'); } }
     else if (d.pay) {
       const o = await get(d.pay);
-      const v = await askForm(`Payment from ${o.customer}`, [{ name: 'amount', label: 'Amount', type: 'money' }, { name: 'method', label: 'Method', type: 'select', options: METHODS }, { name: 'date', label: 'Date', type: 'date' }],
+      const day = await openDay(), atHere = !!day && o.fulfilment === 'market' && o.locationId === day.location;
+      const v = await askForm(`Payment from ${o.customer}`, [{ name: 'amount', label: 'Amount', type: 'money' }, { name: 'method', label: 'Method', type: 'select', options: METHODS }, { name: 'date', label: 'Date', type: 'date' },
+        ...(day && !atHere ? [{ name: 'atStall', label: 'Taken at the stall today (counts toward today\'s takings)', type: 'checkbox' }] : [])],
         { amount: balance(o), method: 'cash', date: today });
-      if (v && v.amount > 0) await takePayment(o, v);
+      if (v && v.amount > 0) await takePaymentDb(o.id, v);
     } else if (d.x) {
       const o = await get(d.x);
       if (await confirmBox(`Cancel ${o.customer}'s order?` + (paidTotal(o) ? `\nThey have paid ${money(paidTotal(o))}; it stays listed as a refund due.` : ''), 'Cancel order', true)) { o.status = 'cancelled'; await saveOrder(o); }

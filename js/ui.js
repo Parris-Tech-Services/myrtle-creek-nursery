@@ -1,4 +1,4 @@
-import { esc, dollars, toCents } from './util.js';
+import { esc, dollars, parseMoney, MAX_QTY } from './util.js';
 
 export function toast(msg, ms = 2200) {
   let t = document.getElementById('toast');
@@ -39,24 +39,36 @@ export function askForm(title, fields, values = {}, { submit = 'Save', extra = [
       if (f.type === 'select') return `<select name="${f.name}">${f.options.map(([k, l]) => `<option value="${esc(k)}" ${k == v ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>`;
       if (f.type === 'textarea') return `<textarea name="${f.name}" rows="3">${esc(v)}</textarea>`;
       if (f.type === 'checkbox') return `<input type="checkbox" name="${f.name}" ${v ? 'checked' : ''}>`;
-      if (f.type === 'money') return `<input name="${f.name}" inputmode="decimal" value="${v == null ? '' : dollars(v)}" placeholder="0.00">`;
-      if (f.type === 'number') return `<input name="${f.name}" type="number" inputmode="numeric" step="any" value="${v ?? ''}">`;
+      if (f.type === 'money') return `<input name="${f.name}" inputmode="decimal" autocomplete="off" value="${v == null ? '' : dollars(v)}" placeholder="0.00">`;
+      if (f.type === 'number') return `<input name="${f.name}" type="number" inputmode="numeric" step="any" min="${f.min ?? 0}" max="${f.max ?? MAX_QTY}" value="${v ?? ''}">`;
       return `<input name="${f.name}" type="${f.type || 'text'}" value="${esc(v)}">`;
     };
     const o = overlay(`<form><h3>${esc(title)}</h3>
-      ${fields.map(f => `<label class="${f.type === 'checkbox' ? 'chk' : ''}" ${f.showWhen ? `data-when="${f.showWhen[0]}" data-in="${f.showWhen[1].join(',')}"` : ''}><span>${esc(f.label)}</span>${inp(f)}${f.hint ? `<small>${esc(f.hint)}</small>` : ''}</label>`).join('')}
+      ${fields.map(f => `<label class="${f.type === 'checkbox' ? 'chk' : ''}" ${f.showWhen ? `data-when="${f.showWhen[0]}" data-in="${f.showWhen[1].join(',')}"` : ''}><span>${esc(f.label)}</span>${inp(f)}${f.hint ? `<small>${esc(f.hint)}</small>` : ''}<small class="err" data-err="${f.name}" role="alert" hidden></small></label>`).join('')}
       <div class="row"><button type="button" class="btn ghost" data-x="cancel">Cancel</button>
       ${extra.map(([k, l]) => `<button type="button" class="btn danger" data-x="${k}">${esc(l)}</button>`).join('')}
       <button class="btn primary">${esc(submit)}</button></div></form>`);
     const form = o.querySelector('form');
     const when = () => form.querySelectorAll('label[data-when]').forEach(l => { l.hidden = !l.dataset.in.split(',').includes(form.elements[l.dataset.when].value); });
     form.onchange = when; when();
+    const fail = (name, msg) => { const s = form.querySelector(`[data-err="${name}"]`); s.textContent = msg; s.hidden = false; form.elements[name].focus(); };
     form.onsubmit = e => {
       e.preventDefault();
+      form.querySelectorAll('[data-err]').forEach(s => { s.hidden = true; });
       const out = {};
       for (const f of fields) {
-        const el = form.elements[f.name];
-        out[f.name] = f.type === 'checkbox' ? el.checked : f.type === 'money' ? toCents(el.value) : f.type === 'number' ? (el.value === '' ? null : +el.value) : el.value.trim();
+        const el = form.elements[f.name], hidden = el.closest('label')?.hidden;
+        if (f.type === 'checkbox') out[f.name] = el.checked;
+        else if (f.type === 'money') {
+          const raw = el.value.trim(), c = raw === '' ? 0 : parseMoney(raw);
+          if (!hidden && c === null) return fail(f.name, 'Enter an amount like 12.50');
+          if (!hidden && c < 0) return fail(f.name, 'The amount cannot be negative');
+          out[f.name] = c ?? 0;
+        } else if (f.type === 'number') {
+          const n = el.value === '' ? null : Number(el.value), lo = f.min ?? 0, hi = f.max ?? MAX_QTY;
+          if (!hidden && n !== null && (!Number.isFinite(n) || n < lo || n > hi)) return fail(f.name, `Enter a number from ${lo} to ${hi}`);
+          out[f.name] = n === null ? null : Math.round(n);
+        } else out[f.name] = el.value.trim();
       }
       o.remove(); res(out);
     };
@@ -97,7 +109,23 @@ export const stepperHtml = (attrs, value, label = 'Quantity') => `<span class="s
 export function stepperClick(e) {
   const b = e.target.closest('button[data-step]'); if (!b) return false;
   const input = b.parentElement.querySelector('input');
-  input.value = Math.max(0, (parseInt(input.value, 10) || 0) + +b.dataset.step);
+  input.value = Math.min(MAX_QTY, Math.max(0, (parseInt(input.value, 10) || 0) + +b.dataset.step));
   input.dispatchEvent(new Event('input', { bubbles: true })); input.dispatchEvent(new Event('change', { bubbles: true }));
   return true;
+}
+
+const inflight = new Set();
+/** Runs fn unless the same key is already running: a second tap on a money or stock button does nothing. */
+export async function guard(key, fn) {
+  if (inflight.has(key)) return;
+  inflight.add(key);
+  try { return await fn(); } finally { inflight.delete(key); }
+}
+
+/** A message with a single OK button, for errors the user must read. */
+export function notice(title, message) {
+  return new Promise(res => {
+    const o = overlay(`<h3>${esc(title)}</h3><p style="white-space:pre-line">${esc(message)}</p><button class="btn primary big">OK</button>`);
+    o.querySelector('button').onclick = () => { o.remove(); res(); };
+  });
 }

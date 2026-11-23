@@ -44,10 +44,11 @@ async function call(conn, init, params) {
   const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 90000);   // never let a stuck request block syncing
   let res;
   try { res = await fetch(url, { ...(init ? { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify({ key: conn.key, ...init }) } : {}), signal: ctl.signal }); }
-  catch (e) { throw new Error(e.name === 'AbortError' ? 'The Google Sheet took too long to answer' : 'Could not reach the Google Sheet. If this keeps happening, redeploy the script as a New version (' + e.message + ')'); }
+  catch (e) { throw new Error(e.name === 'AbortError' ? 'The Google Sheet took too long to answer' : 'Could not reach the Google Sheet. Check that "Who has access" is set to Anyone, then redeploy the script as a New version.'); }
   finally { clearTimeout(timer); }
-  if (!res.ok) throw new Error('HTTP ' + res.status);
-  const j = await res.json();
+  if (!res.ok) throw new Error('The Google Sheet answered with an error (' + res.status + '). ' + 'Could not reach the Google Sheet. Check that "Who has access" is set to Anyone, then redeploy the script as a New version.');
+  let j;
+  try { j = await res.json(); } catch { throw new Error('The answer did not come from the script (often a sign-in page). ' + 'Could not reach the Google Sheet. Check that "Who has access" is set to Anyone, then redeploy the script as a New version.'); }
   if (j.scriptVersion !== undefined) status.scriptVersion = j.scriptVersion;
   if (!j.ok) throw new Error(j.error || 'The sheet refused the request');
   return j;
@@ -69,6 +70,7 @@ export async function flush({ force = false } = {}) {
       const r = await call(conn, { action: 'push', tabs, items });
       const rows = applyAcks(group, r.acked);
       await db.syncState.bulkPut(rows);
+      await takeNewerFromSheet(r.stale);
       sent += rows.length;
       if (rows.length < group.length) throw new Error(`${group.length - rows.length} record(s) were not acknowledged`);
     }
@@ -78,6 +80,26 @@ export async function flush({ force = false } = {}) {
     status.error = e.message; status.failures++; status.nextTry = Date.now() + backoffMs(status.failures);
   } finally { status.busy = false; await refreshPending(); }
   return { sent, error: status.error };
+}
+
+/**
+ * The sheet already held a NEWER copy of some records (another device saved them). The script sends those copies back:
+ * keep them here instead of silently pushing over them, and record that they are in step with the sheet.
+ */
+export async function takeNewerFromSheet(stale = []) {
+  if (!stale?.length) return 0;
+  let n = 0;
+  stamping.on = false;
+  try {
+    for (const s of stale) {
+      const i = s.key.indexOf(':'), store = s.key.slice(0, i);
+      if (!(store in STORES)) continue;
+      const remote = JSON.parse(s.json), local = await db[store].get(idOf(store, remote));
+      if (!local || (remote.updatedAt || 0) > (local.updatedAt || 0)) { await db[store].put(remote); n++; }
+      await db.syncState.put({ id: s.key, acked: remote.updatedAt || 0 });
+    }
+  } finally { stamping.on = true; }
+  return n;
 }
 
 export async function refreshPending() { status.pending = (await pending()).length; notify(); return status.pending; }
