@@ -1,8 +1,8 @@
 import { db, getSetting, setSetting } from './db.js';
 import { exportBackup, importBackup, salesCsv, ordersCsv, cashCsv, daysCsv, deliverFile, restoreSnapshot } from './sync.js';
-import { getConn, connect, disconnect, flush, pending, remoteCounts, localCounts, restoreFromSheet, syncStatus } from './gsync.js';
+import { getConn, connect, disconnect, flush, pending, remoteCounts, localCounts, restoreFromSheet, syncStatus, scriptOutdated, resendAll } from './gsync.js';
 import { esc, fmtDateTime, ymd, $ } from './util.js';
-import { toast, confirmBox, choose } from './ui.js';
+import { toast, confirmBox, choose, overlay } from './ui.js';
 import { APP_VERSION } from './version.js';
 
 export async function backupDue() {
@@ -29,9 +29,10 @@ export async function render(root) {
     ${snaps.map(x => `<div class="kv"><span>${fmtDateTime(x.ts)} <small>${esc(x.reason)}</small></span><button class="btn small danger" data-snap="${x.id}">Restore</button></div>`).join('') || '<p class="muted">None yet.</p>'}</div>
   <div class="card"><h2>Google Sheet backup</h2>
     ${conn ? `<p><b>Connected \u2713</b> to ${esc(conn.name)}</p>
+    ${scriptOutdated(conn) ? '<div class="banner">Your Google Sheet needs a small update. Your data is safe on this device. <button class="btn small" id="howupdate">How to update</button></div>' : ''}
     <div class="kv"><span>Waiting to send</span><b>${(await pending()).length}</b></div>
     <div class="kv"><span>Last successful sync</span><b>${fmtDateTime(await getSetting('lastSync'))}</b></div>${syncStatus.error ? `<p class="tag bad">Last sync problem: ${esc(syncStatus.error)}</p>` : ''}
-    <div class="row"><button class="btn primary" id="sync">Sync now</button><button class="btn" id="gres">Restore from Google Sheet</button><button class="btn danger" id="disc">Disconnect</button></div>`
+    <div class="row"><button class="btn primary" id="sync">Sync now</button><button class="btn" id="gres">Restore from Google Sheet</button><button class="btn" id="resend">Resend everything</button><button class="btn danger" id="disc">Disconnect</button></div>`
     : `<p class="muted">Copies every sale, order and stock change to your own Google Sheet and keeps a copy you can restore from.</p>
     <label><span>Connect Google Sheet: paste the connection code</span><textarea id="code" rows="3" placeholder="Paste code here"></textarea></label>
     <button class="btn primary big" id="connect">Connect Google Sheet</button>`}</div>
@@ -59,6 +60,8 @@ export async function render(root) {
     }
     if (b.id === 'disc') { if (await confirmBox('Disconnect from the Google Sheet? Your data stays on this device and in the sheet.', 'Disconnect', true)) { await disconnect(); render(root); } return; }
     if (b.id === 'gres') return restoreFlow(root);
+    if (b.id === 'howupdate') return updateDialog();
+    if (b.id === 'resend') { if (await confirmBox('Send every record to the sheet again? This is safe and can take a minute.', 'Resend')) { toast('Sending everything...', 3000); const r = await resendAll(); toast(r.error ? 'Sync error: ' + r.error : `Sent ${r.sent} records`, 4000); render(root); } return; }
     if (b.id === 'persist') { await navigator.storage.persist(); render(root); }
   };
   $('#file', root).onchange = async e => {
@@ -76,4 +79,28 @@ async function restoreFlow(root) {
   if (!mode) return;
   if (mode === 'replace' && !await confirmBox('Replace everything on this device with the sheet? A safety snapshot is taken first.', 'Replace', true)) return;
   try { const w = await restoreFromSheet(mode); toast(`Restored ${Object.values(w).reduce((a, b) => a + b, 0)} records`, 4000); setTimeout(() => location.reload(), 800); } catch (e) { toast('Restore failed: ' + e.message, 6000); }
+}
+
+/** Steps for updating the script in the Sheet. The new script text is fetched from this app's own files. */
+export function updateDialog() {
+  const o = overlay(`<h3>Update your Google Sheet</h3><p>Your link stays the same, so you do not need to reconnect.</p>
+    <button class="btn primary big" id="copyscript">Copy new script</button>
+    <ol><li>Open your Google Sheet. Choose <b>Extensions</b>, then <b>Apps Script</b>.</li>
+    <li>Click in the code, select all, and <b>paste</b> the new script over it. Click <b>Save</b>.</li>
+    <li>Click <b>Deploy</b>, then <b>Manage deployments</b>.</li>
+    <li>Click the pencil (edit) icon. Under <b>Version</b> choose <b>New version</b>, then <b>Deploy</b>.</li>
+    <li>Back in the app, tap <b>Sync now</b>.</li></ol>
+    <button class="btn ghost" id="closeupdate">Close</button>`);
+  o.onclick = async e => {
+    const b = e.target.closest('button'); if (!b) return;
+    if (b.id === 'closeupdate') o.remove();
+    if (b.id === 'copyscript') {
+      let text = '';
+      try { text = await (await fetch('apps-script.gs', { cache: 'reload' })).text(); } catch { return toast('Could not load the script. Check your connection.', 4000); }
+      const ta = Object.assign(document.createElement('textarea'), { value: text }); ta.style.cssText = 'position:fixed;opacity:0'; document.body.append(ta); ta.select();
+      let ok = false; try { ok = document.execCommand('copy'); } catch { ok = false; } ta.remove();
+      if (!ok) try { await navigator.clipboard.writeText(text); ok = true; } catch { ok = false; }
+      toast(ok ? 'Script copied' : 'Could not copy automatically', 3000); b.textContent = ok ? 'Script copied \u2713' : 'Copy new script';
+    }
+  };
 }

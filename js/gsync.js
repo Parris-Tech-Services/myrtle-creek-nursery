@@ -2,10 +2,11 @@
 import { db, getSetting, setSetting, catalog, stamping } from './db.js';
 import { STORES, SYNCED_SETTINGS, idOf, pendingOps, batch, applyAcks, backoffMs, mergeRecords, decodeConnection, chipState } from './syncing.js';
 import { takeSnapshot, cashRow } from './sync.js';
-import { paidTotal, paymentStatus } from './orders.js';
-import { peopleText, totalPersonHours } from './staff.js';
+import { rowsFor, tabDefs, TABS_OF_STORE } from './sheetmap.js';
 
-const status = { error: null, failures: 0, nextTry: 0, busy: false, pending: 0 };
+/** The Sheet's script must be at least this version for the app's sync to work (see apps-script.gs SCRIPT_VERSION). */
+export const REQUIRED_SCRIPT_VERSION = 2;
+const status = { error: null, failures: 0, nextTry: 0, busy: false, pending: 0, scriptVersion: undefined };
 export const syncStatus = status;
 const notify = () => window.dispatchEvent(new Event('syncchange'));
 export const getConn = () => getSetting('sheetConn');
@@ -21,47 +22,22 @@ export async function pending() { return pendingOps(await liveRecords(), await s
 export async function isAcked(store, rec) { const s = await db.syncState.get(store + ':' + idOf(store, rec)); return !!s && s.acked >= (rec.updatedAt || 0); }
 export async function ackedSet() { const m = await stateMap(); return (store, rec) => (m[store + ':' + idOf(store, rec)]?.acked ?? -1) >= (rec.updatedAt || 0); }
 
-// Readable columns for analysis. The full record always goes along in the "json" column.
-const money = c => (c || 0) / 100;
-const READ = {
-  sales: (r, c) => ({ date: c.days[r.marketDayId]?.date || '', time: new Date(r.timestamp).toLocaleTimeString('en-AU'), location: c.loc(c.days[r.marketDayId]?.location),
-    items: r.lines.map(l => `${l.qty} x ${c.pn(l.productId, l)}${l.lineType !== 'normal' ? ' (' + l.lineType + ')' : ''}`).join('; '), units: r.lines.reduce((t, l) => t + l.qty, 0),
-    dealSavings: money(r.dealSavings), total: money(r.total), payment: r.paymentMethod, cashTendered: money(r.cashTendered), changeGiven: money(r.changeGiven), rounding: money(r.rounding), voided: !!r.voided }),
-  marketDays: (r, c) => ({ date: r.date, location: c.loc(r.location), status: r.status, openFloat: money(r.float), counted: r.countedCash == null ? '' : money(r.countedCash), weather: r.weather || '', crowd: r.crowd || '',
-    people: peopleText(r), personHours: totalPersonHours(r), keptForNext: r.keepFloat == null ? '' : money(r.keepFloat), banked: r.banked == null ? '' : money(r.banked), notes: r.notes || '' }),
-  cashMovements: (r, c) => ({ date: r.date || '', day: c.days[r.marketDayId]?.date || '', type: r.type, category: r.category || '', amount: money(r.amount), note: r.note || '' }),
-  orders: (r, c) => ({ customer: r.customer, phone: r.phone || '', fulfilment: r.fulfilment, location: c.loc(r.locationId), dueDate: r.dueDate || '', status: r.status, paymentStatus: paymentStatus(r),
-    total: money(r.total), paid: money(paidTotal(r)), collectedDate: r.collectedDate || '', items: r.lines.map(l => `${l.qty} x ${c.pn(l.productId, l)}`).join('; '), notes: r.notes || '' }),
-  losses: (r, c) => ({ date: r.date, location: c.loc(r.locationId), product: c.pn(r.productId), qty: r.qty, reason: r.reason, value: money(r.qty * r.unitPrice), note: r.note || '' }),
-  soldOut: (r, c) => ({ date: c.days[r.marketDayId]?.date || '', product: c.pn(r.productId), at: new Date(r.ts).toLocaleTimeString('en-AU') }),
-  stock: (r, c) => ({ product: c.pn(r.productId), location: c.loc(r.locationId), qty: r.qty }),
-  dayStock: (r, c) => ({ date: c.days[r.marketDayId]?.date || '', product: c.pn(r.productId), taken: r.taken, returned: r.returned ?? '' }),
-  batches: (r, c) => ({ product: c.pn(r.productId), method: r.method, startDate: r.startDate, qtyStarted: r.qtyStarted, losses: r.losses || 0, moved: r.moved || 0, expectedReady: r.expectedReady || '' }),
-  products: r => ({ type: r.type, group: r.group, category: r.category || '', name: r.name, price: r.price == null ? '' : money(r.price), active: !!r.active }),
-  types: r => ({ name: r.name }),
-  groups: r => ({ name: r.name, unitPrice: money(r.unit), deals: (r.deals || []).map(d => `${d.qty} for ${money(d.price)}`).join(', ') }),
-  locations: r => ({ name: r.name }),
-  packing: r => ({ qty: r.qty }),
-  settings: r => ({ value: JSON.stringify(r.value) }),
-};
-
+// What the readable Sheet tabs look like lives in sheetmap.js. Restore data always goes in _data as the full json record.
 async function buildItems(ops) {
   const cat = await catalog(), days = Object.fromEntries((await db.marketDays.toArray()).map(d => [d.id, d]));
-  const c = { days, loc: id => cat.lmap[id]?.name || id || '', pn: (id, l) => cat.pmap[id]?.label || l?.name || id };
-  const items = [];
+  const c = { days, gmap: cat.gmap, tmap: cat.tmap, loc: id => cat.lmap[id]?.name || id || '', pn: (id, l) => cat.pmap[id]?.label || l?.name || id };
+  const items = [], tabs = new Set();
   for (const op of ops) {
     const base = { key: op.key, store: op.store, id: op.id, updatedAt: op.updatedAt };
-    if (op.deleted) { items.push({ ...base, deleted: true }); continue; }
+    if (op.deleted) { items.push({ ...base, deleted: true, deleteRows: (TABS_OF_STORE[op.store] || []).map(tab => ({ tab, id: `${op.store}:${op.id}` })) }); (TABS_OF_STORE[op.store] || []).forEach(t => tabs.add(t)); continue; }
     const rec = await db[op.store].get(op.id);
     if (!rec) continue;
-    const row = READ[op.store](rec, c);
-    items.push({ ...base, cols: Object.keys(row), row, json: JSON.stringify(rec) });
-    if (op.store === 'marketDays') {   // derived, read-only CashCounts sheet
-      const cr = await cashRow(rec, cat.lmap); delete cr.id;
-      items.push({ key: 'cashCounts:' + op.id, store: 'cashCounts', id: op.id, updatedAt: op.updatedAt, cols: Object.keys(cr), row: cr, json: '' });
-    }
+    const ctx = op.store === 'marketDays' ? { ...c, cash: await cashRow(rec, cat.lmap) } : c;
+    const { rows, replaceTabs } = rowsFor(op.store, rec, ctx);
+    rows.forEach(r => tabs.add(r.tab)); (replaceTabs || []).forEach(t => tabs.add(t));
+    items.push({ ...base, json: JSON.stringify(rec), rows, ...(replaceTabs ? { replaceTabs } : {}) });
   }
-  return items;
+  return { items, tabs: tabDefs([...tabs]) };
 }
 
 async function call(conn, init, params) {
@@ -73,6 +49,7 @@ async function call(conn, init, params) {
   finally { clearTimeout(timer); }
   if (!res.ok) throw new Error('HTTP ' + res.status);
   const j = await res.json();
+  if (j.scriptVersion !== undefined) status.scriptVersion = j.scriptVersion;
   if (!j.ok) throw new Error(j.error || 'The sheet refused the request');
   return j;
 }
@@ -84,9 +61,14 @@ export async function flush({ force = false } = {}) {
   if (!force && Date.now() < status.nextTry) return { sent: 0 };
   status.busy = true; let sent = 0;
   try {
+    if (force || status.scriptVersion === undefined) { const j = await call(conn, null, { action: 'ping' }).catch(() => null); status.scriptVersion = j ? (j.scriptVersion ?? 0) : undefined; }
+    if (status.scriptVersion !== undefined && status.scriptVersion < REQUIRED_SCRIPT_VERSION) {   // an old script cannot read the new format: wait, do not spam errors
+      status.nextTry = Date.now() + 10 * 60e3; return { sent: 0, outdated: true };
+    }
     for (const group of batch(await pending(), 50)) {
-      const items = await buildItems(group);
-      const r = await call(conn, { action: 'push', items });
+      const { items, tabs } = await buildItems(group);
+      const r = await call(conn, { action: 'push', tabs, items });
+      if (r.migrated && !flush.retried) { flush.retried = true; await db.syncState.clear(); status.busy = false; const again = await flush({ force: true }); flush.retried = false; return again; }
       const rows = applyAcks(group, r.acked);
       await db.syncState.bulkPut(rows);
       sent += rows.length;
@@ -101,8 +83,14 @@ export async function flush({ force = false } = {}) {
 }
 
 export async function refreshPending() { status.pending = (await pending()).length; notify(); return status.pending; }
+export const scriptOutdated = conn => !!conn && status.scriptVersion !== undefined && status.scriptVersion < REQUIRED_SCRIPT_VERSION;
+
+/** Forget what was synced so every record is sent again (recovery, or after the sheet's script was updated). */
+export async function resendAll() { await db.syncState.clear(); status.error = null; status.nextTry = 0; return flush({ force: true }); }
+
 export async function syncChip() {
   const conn = await getConn();
+  if (scriptOutdated(conn)) return { text: 'Google Sheet needs an update', level: 'off', error: null };
   return { ...chipState({ connected: !!conn, online: navigator.onLine, pending: status.pending, error: status.error }), error: status.error };
 }
 
@@ -121,6 +109,7 @@ export async function connect(code) {
   const c = decodeConnection(code);
   if (!c) throw new Error('That does not look like a connection code. Copy it again from the sheet.');
   const j = await call(c, null, { action: 'ping' });
+  status.scriptVersion = j.scriptVersion ?? 0;
   await setSetting('sheetConn', { url: c.url, key: c.key, name: j.name });
   status.error = null; status.failures = 0; status.nextTry = 0;
   flush({ force: true });

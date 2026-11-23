@@ -1,16 +1,24 @@
 /**
  * Myrtle Creek Nursery: Google Sheet back-up and restore.
  * This script is bound to the template Sheet. Making a copy of the Sheet copies the script too.
- * Nothing to set up by hand: tabs and headers are created on the first request, and the secret key
- * is generated the first time it is needed (Project Settings > Script Properties > KEY).
+ * Nothing to set up by hand: the tabs, headings and the "Start here" steps are written on the first request,
+ * and the secret key is generated the first time it is needed (Project Settings > Script Properties > KEY).
  *
- * Requests: POST {key, action:'push', items:[...]}  -> {ok, acked:[keys]}
+ * Two kinds of storage:
+ *   _data (hidden)   store | id | updatedAt | json. Everything the app can restore from lives only here.
+ *   readable tabs    Sales, Market days, ... for sorting, filtering and pivot tables. Column A holds a hidden row id.
+ * Every record is an upsert. An older copy never overwrites a newer one (updatedAt decides).
+ *
+ * Requests: POST {key, action:'push', tabs, items}  -> {ok, acked:[keys], migrated, scriptVersion}
  *           GET  ?key=..&action=ping|counts|export&store=..&offset=..&limit=..
  *           GET  (no parameters) -> friendly page with the connection code (until the app has connected once)
- * Every record is an upsert keyed by id. An older copy never overwrites a newer one (updatedAt decides).
  */
+const SCRIPT_VERSION = 2;   // the app checks this. Raise it whenever the script changes in a way the app depends on.
 const STORES = ['sales', 'marketDays', 'cashMovements', 'orders', 'losses', 'soldOut', 'stock', 'dayStock', 'batches', 'products', 'types', 'groups', 'locations', 'packing', 'settings'];
-const sheetName_ = store => store.charAt(0).toUpperCase() + store.slice(1).replace(/^cashCounts$/, 'CashCounts');
+const DATA_TAB = '_data';
+const START_TAB = 'Start here';
+const TAB_ORDER = ['Start here', 'Sales', 'Market days', 'Cash counts', 'Expenses & cash out', 'Orders', 'Losses', 'Stock taken & returned', 'Sold out', 'Nursery stock', 'Growing batches', 'Products & prices', 'People'];
+const NUMFMT = { date: 'ddd d mmm yyyy', time: 'h:mm am/pm', money: '$#,##0.00', num: '0', dec: '0.0#' };
 
 function getKey_() {
   const props = PropertiesService.getScriptProperties();
@@ -36,9 +44,13 @@ function doPost(e) {
     const data = JSON.parse(e.postData.contents);
     if (data.key !== getKey_()) return json_({ ok: false, error: 'Wrong key' });
     if (data.action !== 'push') return json_({ ok: false, error: 'Unknown action' });
-    return json_({ ok: true, acked: push_(SpreadsheetApp.getActiveSpreadsheet(), data.items || []) });
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    startHere_(ss);
+    const migrated = migrate_(ss);
+    const acked = push_(ss, data.tabs || {}, data.items || []);
+    return json_({ ok: true, acked: acked, migrated: migrated, scriptVersion: SCRIPT_VERSION });
   } catch (err) {
-    return json_({ ok: false, error: String(err) });
+    return json_({ ok: false, error: String(err), scriptVersion: SCRIPT_VERSION });
   } finally { lock.releaseLock(); }
 }
 
@@ -47,11 +59,16 @@ function doGet(e) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   if (!p.action && !p.key) return connectPage_();
   if (p.key !== getKey_()) return json_({ ok: false, error: 'Wrong key' });
-  if (p.action === 'ping') { PropertiesService.getScriptProperties().setProperty('CONNECTED', '1'); return json_({ ok: true, name: ss.getName() }); }
+  if (p.action === 'ping') {
+    PropertiesService.getScriptProperties().setProperty('CONNECTED', '1');
+    startHere_(ss);
+    return json_({ ok: true, name: ss.getName(), scriptVersion: SCRIPT_VERSION });
+  }
   if (p.action === 'counts') {
     const counts = {};
-    STORES.forEach(function (s) { const sh = ss.getSheetByName(sheetName_(s)); counts[s] = sh ? Math.max(0, sh.getLastRow() - 1) : 0; });
-    return json_({ ok: true, counts: counts });
+    STORES.forEach(function (s) { counts[s] = 0; });
+    dataRows_(ss).forEach(function (r) { if (counts[r[0]] !== undefined) counts[r[0]]++; });
+    return json_({ ok: true, counts: counts, scriptVersion: SCRIPT_VERSION });
   }
   if (p.action === 'export') return json_(export_(ss, p.store, Number(p.offset) || 0, Math.min(Number(p.limit) || 200, 500)));
   return json_({ ok: false, error: 'Unknown action' });
@@ -76,6 +93,7 @@ function onOpen() {
     .addItem('Show connection code', 'showCode')
     .addItem('Show the code page again', 'resetConnected')
     .addToUi();
+  try { startHere_(SpreadsheetApp.getActiveSpreadsheet()); } catch (e) { /* never block opening the sheet */ }
 }
 function showHelp() {
   SpreadsheetApp.getUi().showModalDialog(HtmlService.createHtmlOutput(
@@ -83,8 +101,8 @@ function showHelp() {
     '<li>Extensions &gt; Apps Script &gt; <b>Deploy</b> &gt; <b>New deployment</b>.</li>' +
     '<li>Pick the gear &gt; <b>Web app</b>. Execute as: <b>Me</b>. Who has access: <b>Anyone</b>. Press <b>Deploy</b>.</li>' +
     '<li>Press <b>Authorize access</b>. If Google says it has not verified the app: <b>Advanced</b> &gt; <b>Go to ... (unsafe)</b>. It is your own script.</li>' +
-    '<li>Back here: menu <b>Myrtle Creek &gt; Show connection code</b>, and Copy.</li>' +
-    '<li>In the app: <b>Backup &gt; Connect Google Sheet</b>, paste, done.</li></ol></div>').setWidth(480).setHeight(360), 'How to connect');
+    '<li><b>Click the blue Web app URL</b> shown after deploying. A page opens with your connection code. Press <b>Copy</b>. (Or use the menu <b>Myrtle Creek &gt; Show connection code</b>.)</li>' +
+    '<li>In the app: <b>Backup &gt; Connect Google Sheet</b>, paste, done.</li></ol></div>').setWidth(480).setHeight(380), 'How to connect');
 }
 function showCode() {
   const code = connectionCode_();
@@ -96,59 +114,182 @@ function showCode() {
 }
 function resetConnected() { PropertiesService.getScriptProperties().deleteProperty('CONNECTED'); SpreadsheetApp.getUi().alert('The code page will show the code again until the app next connects.'); }
 
+// ---- "Start here" tab: plain English steps, written by the script ----------
+function startHere_(ss) {
+  const props = PropertiesService.getScriptProperties();
+  let sh = ss.getSheetByName(START_TAB);
+  if (!sh) {
+    const first = ss.getSheetByName('Sheet1');
+    if (first) { first.setName(START_TAB); sh = first; } else sh = ss.insertSheet(START_TAB);
+  }
+  if (props.getProperty('START_V') === String(SCRIPT_VERSION) && sh.getRange(1, 1).getValue() !== '') return;
+  const lines = [
+    ['Myrtle Creek Nursery: your sales and stock, backed up here'],
+    [''],
+    ['This sheet keeps a safe copy of everything you record in the app. It fills itself in whenever your phone or iPad has signal.'],
+    [''],
+    ['To connect it (you only do this once)'],
+    ['1.  In this sheet, open the menu Extensions, then Apps Script.'],
+    ['2.  Click Deploy (top right), then New deployment.'],
+    ['3.  Click the cog next to "Select type" and choose Web app.'],
+    ['4.  Set "Execute as" to Me and "Who has access" to Anyone. Click Deploy.'],
+    ['5.  Click Authorize access and choose your Google account. If it says "Google hasn\'t verified this app", click Advanced, then Go to (your project) (unsafe). It is your own copy, so this is fine.'],
+    ['6.  Click the blue Web app URL shown after deploying. A page opens with a code. Click Copy.'],
+    ['7.  In the app, go to Backup, then Connect Google Sheet, and paste the code.'],
+    [''],
+    ['Good to know'],
+    ['-  Please don\'t rename or delete the tabs. The app relies on them.'],
+    ['-  The tabs are for reading, sorting and filtering. Changes you type here are not sent back to the app.'],
+    ['-  Your data stays in your own Google account.'],
+    ['-  If the app says "Your Google Sheet needs a small update", open the app, go to Backup, and tap How to update.'],
+    ['-  Need help? Ask Dan.'],
+  ];
+  sh.clear();
+  sh.getRange(1, 1, lines.length, 1).setValues(lines).setWrap(true).setVerticalAlignment('top');
+  sh.setColumnWidth(1, 640);
+  sh.getRange(1, 1).setFontWeight('bold').setFontSize(16);
+  sh.getRange(5, 1).setFontWeight('bold'); sh.getRange(14, 1).setFontWeight('bold');
+  sh.setHiddenGridlines(true);
+  props.setProperty('START_V', String(SCRIPT_VERSION));
+  arrange_(ss);
+}
+
 // ---- storage ---------------------------------------------------------------
-function sheetFor_(ss, store, cols) {
-  const name = sheetName_(store);
-  let sh = ss.getSheetByName(name);
-  if (!sh) sh = ss.insertSheet(name);
-  if (sh.getLastRow() === 0) {
-    const header = ['id', 'updatedAt'].concat(cols, ['json']);
-    sh.getRange(1, 1, 1, header.length).setValues([header]).setFontWeight('bold');
+function dataSheet_(ss) {
+  let sh = ss.getSheetByName(DATA_TAB);
+  if (!sh) {
+    sh = ss.insertSheet(DATA_TAB);
+    sh.getRange(1, 1, 1, 4).setValues([['store', 'id', 'updatedAt', 'json']]).setFontWeight('bold');
     sh.setFrozenRows(1);
+    sh.hideSheet();
   }
   return sh;
 }
+function dataRows_(ss) {
+  const sh = ss.getSheetByName(DATA_TAB);
+  if (!sh || sh.getLastRow() < 2) return [];
+  return sh.getRange(2, 1, sh.getLastRow() - 1, 4).getValues();
+}
 
-/** Upserts items grouped by store. Returns the keys that are safely stored (the app only trusts these). */
-function push_(ss, items) {
-  const acked = [];
-  const byStore = {};
-  items.forEach(function (it) { (byStore[it.store] = byStore[it.store] || []).push(it); });
-  Object.keys(byStore).forEach(function (store) {
-    const list = byStore[store];
-    const first = list.filter(function (i) { return i.cols; })[0];
-    if (!first && !ss.getSheetByName(sheetName_(store))) { list.forEach(function (i) { acked.push(i.key); }); return; }   // delete for a sheet that never existed
-    const sh = sheetFor_(ss, store, first ? first.cols : []);
-    const width = sh.getLastColumn();
-    const last = sh.getLastRow();
-    const index = {};
-    if (last > 1) sh.getRange(2, 1, last - 1, 2).getValues().forEach(function (r, i) { index[String(r[0])] = { row: i + 2, updatedAt: Number(r[1]) || 0 }; });
-    const toDelete = [], fresh = [];
-    list.forEach(function (it) {
-      const at = index[String(it.id)];
-      if (it.deleted) { if (at) toDelete.push(at.row); acked.push(it.key); return; }
-      const values = [it.id, it.updatedAt].concat(it.cols.map(function (c) { const v = it.row[c]; return v === undefined || v === null ? '' : v; }), [it.json]);
-      while (values.length < width) values.splice(values.length - 1, 0, '');
-      if (at) { if (at.updatedAt <= it.updatedAt) sh.getRange(at.row, 1, 1, values.length).setValues([values]); }   // older copy never beats newer
-      else { fresh.push(values); index[String(it.id)] = { row: -1, updatedAt: it.updatedAt }; }
+function conv_(v, t) {
+  if (v === '' || v === null || v === undefined) return '';
+  if (t === 'date') { const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(v)); return m ? new Date(+m[1], +m[2] - 1, +m[3]) : String(v); }
+  if (t === 'time') { const m = /^(\d{1,2}):(\d{2})$/.exec(String(v)); return m ? (+m[1] * 60 + +m[2]) / 1440 : String(v); }
+  if (t === 'money' || t === 'num' || t === 'dec') return Number(v);
+  return String(v);
+}
+
+/** Creates a readable tab once: bold olive header, frozen row, filter, hidden id column. Returns {sh, cols, idx, fresh, del, created}. */
+function tab_(ss, cache, name, defs) {
+  if (cache[name]) return cache[name];
+  const cols = defs[name];
+  let sh = ss.getSheetByName(name), created = false;
+  if (!sh) {
+    if (!cols) return null;
+    sh = ss.insertSheet(name); created = true;
+    const header = ['id'].concat(cols.map(function (c) { return c.h; }));
+    sh.getRange(1, 1, 1, header.length).setValues([header]).setFontWeight('bold').setBackground('#e5ebd9');
+    sh.setFrozenRows(1);
+    sh.hideColumns(1);
+    sh.getRange(1, 1, Math.max(2, sh.getMaxRows()), header.length).createFilter();
+  }
+  const width = sh.getLastColumn();
+  const idx = {};
+  if (sh.getLastRow() > 1) sh.getRange(2, 1, sh.getLastRow() - 1, 1).getValues().forEach(function (r, i) { idx[String(r[0])] = i + 2; });
+  cache[name] = { sh: sh, cols: cols || [], idx: idx, fresh: [], del: [], created: created, width: width };
+  return cache[name];
+}
+
+/** Upserts items. Returns the keys that are safely stored (the app only trusts these). */
+function push_(ss, defs, items) {
+  const data = dataSheet_(ss);
+  const dIdx = {};
+  if (data.getLastRow() > 1) data.getRange(2, 1, data.getLastRow() - 1, 3).getValues().forEach(function (r, i) { dIdx[r[0] + '|' + r[1]] = { row: i + 2, updatedAt: Number(r[2]) || 0 }; });
+  const dFresh = [], dDel = [], cache = {}, acked = [];
+
+  items.forEach(function (it) {
+    try {
+      const k = it.store + '|' + it.id, ex = dIdx[k];
+      if (it.deleted) {
+        if (ex) { dDel.push(ex.row); delete dIdx[k]; }
+        (it.deleteRows || []).forEach(function (r) { const t = tab_(ss, cache, r.tab, defs); if (t && t.idx[r.id]) { t.del.push(t.idx[r.id]); delete t.idx[r.id]; } });
+        acked.push(it.key); return;
+      }
+      if (ex && ex.updatedAt > it.updatedAt) { acked.push(it.key); return; }   // the sheet already has a newer copy
+      if (ex) { data.getRange(ex.row, 1, 1, 4).setValues([[it.store, String(it.id), it.updatedAt, it.json]]); ex.updatedAt = it.updatedAt; }
+      else { dFresh.push([it.store, String(it.id), it.updatedAt, it.json]); dIdx[k] = { row: -1, updatedAt: it.updatedAt }; }
+      (it.replaceTabs || []).forEach(function (name) {
+        const t = tab_(ss, cache, name, defs); if (!t) return;
+        if (t.sh.getLastRow() > 1) t.sh.getRange(2, 1, t.sh.getLastRow() - 1, t.sh.getLastColumn()).clearContent();   // clear, not delete: a sheet cannot lose all its non-frozen rows
+        t.idx = {}; t.fresh = [];
+      });
+      (it.rows || []).forEach(function (r) {
+        const t = tab_(ss, cache, r.tab, defs); if (!t) return;
+        const values = [r.id].concat(r.cells.map(function (v, i) { return conv_(v, t.cols[i] && t.cols[i].t); }));
+        const at = t.idx[r.id];
+        if (at) t.sh.getRange(at, 1, 1, values.length).setValues([values]);
+        else { t.fresh.push(values); t.idx[r.id] = -1; }
+      });
       acked.push(it.key);
-    });
-    if (fresh.length) sh.getRange(sh.getLastRow() + 1, 1, fresh.length, fresh[0].length).setValues(fresh);
-    toDelete.sort(function (a, b) { return b - a; }).forEach(function (r) { sh.deleteRow(r); });
+    } catch (err) { /* leave this one un-acked so the app retries it */ }
   });
+
+  if (dFresh.length) data.getRange(data.getLastRow() + 1, 1, dFresh.length, 4).setValues(dFresh);
+  dDel.sort(function (a, b) { return b - a; }).forEach(function (r) { try { data.deleteRow(r); } catch (e) { data.getRange(r, 1, 1, 4).clearContent(); } });
+  Object.keys(cache).forEach(function (name) {
+    const t = cache[name], sh = t.sh;
+    if (t.fresh.length) {
+      const start = sh.getLastRow() + 1, need = start + t.fresh.length - 1;
+      if (need > sh.getMaxRows()) sh.insertRowsAfter(sh.getMaxRows(), need - sh.getMaxRows());
+      sh.getRange(start, 1, t.fresh.length, t.fresh[0].length).setValues(t.fresh);
+      t.cols.forEach(function (c, i) { if (NUMFMT[c.t]) sh.getRange(start, i + 2, t.fresh.length, 1).setNumberFormat(NUMFMT[c.t]); });
+    }
+    t.del.sort(function (a, b) { return b - a; }).forEach(function (r) { try { sh.deleteRow(r); } catch (e) { sh.getRange(r, 1, 1, sh.getLastColumn()).clearContent(); } });
+    if (t.created) sh.autoResizeColumns(2, Math.max(1, t.cols.length));
+  });
+  arrange_(ss);
   return acked;
+}
+
+function arrange_(ss) {
+  TAB_ORDER.forEach(function (name, i) {
+    const sh = ss.getSheetByName(name);
+    if (sh) { ss.setActiveSheet(sh); ss.moveActiveSheet(Math.min(i + 1, ss.getNumSheets())); }
+  });
+  const data = ss.getSheetByName(DATA_TAB);
+  if (data) { ss.setActiveSheet(data); ss.moveActiveSheet(ss.getNumSheets()); }
+  const first = ss.getSheetByName(START_TAB);
+  if (first) ss.setActiveSheet(first);
+}
+
+/** Old format (one tab per store with a json column): move the data into _data, delete the old tab. The app then resends the readable rows. */
+function migrate_(ss) {
+  let moved = false;
+  const old = {};
+  STORES.concat(['cashCounts']).forEach(function (s) { old[s.charAt(0).toUpperCase() + s.slice(1)] = s; });
+  ss.getSheets().forEach(function (sh) {
+    const store = old[sh.getName()];
+    if (!store || sh.getLastColumn() < 3 || sh.getLastRow() < 1) return;
+    const header = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+    if (String(header[header.length - 1]) !== 'json') return;
+    if (STORES.indexOf(store) >= 0 && sh.getLastRow() > 1) {
+      const data = dataSheet_(ss), have = {};
+      dataRows_(ss).forEach(function (r) { have[r[0] + '|' + r[1]] = true; });
+      const out = sh.getRange(2, 1, sh.getLastRow() - 1, header.length).getValues()
+        .filter(function (r) { return r[0] !== '' && r[header.length - 1] && !have[store + '|' + r[0]]; })
+        .map(function (r) { return [store, String(r[0]), Number(r[1]) || 0, r[header.length - 1]]; });
+      if (out.length) data.getRange(data.getLastRow() + 1, 1, out.length, 4).setValues(out);
+    }
+    ss.deleteSheet(sh); moved = true;
+  });
+  return moved;
 }
 
 function export_(ss, store, offset, limit) {
   if (STORES.indexOf(store) < 0) return { ok: false, error: 'Unknown store' };
-  const sh = ss.getSheetByName(sheetName_(store));
-  if (!sh || sh.getLastRow() < 2) return { ok: true, records: [], next: null };
-  const total = sh.getLastRow() - 1;
-  const n = Math.min(limit, total - offset);
-  if (n <= 0) return { ok: true, records: [], next: null };
-  const jsonCol = sh.getLastColumn();
-  const vals = sh.getRange(offset + 2, jsonCol, n, 1).getValues();
+  const rows = dataRows_(ss).filter(function (r) { return r[0] === store; });
+  const slice = rows.slice(offset, offset + limit);
   const records = [];
-  vals.forEach(function (r) { try { if (r[0]) records.push(JSON.parse(r[0])); } catch (e) { /* skip unreadable row */ } });
-  return { ok: true, records: records, next: offset + n < total ? offset + n : null };
+  slice.forEach(function (r) { try { if (r[3]) records.push(JSON.parse(r[3])); } catch (e) { /* skip unreadable row */ } });
+  return { ok: true, records: records, next: offset + limit < rows.length ? offset + limit : null, scriptVersion: SCRIPT_VERSION };
 }
