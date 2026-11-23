@@ -72,7 +72,7 @@ export async function exportBackup() {
 export async function importBackup(file, mode, { settings = 'replace' } = {}) {
   const v = await validateBackup(await file.text());
   if (!v.ok) throw new Error(v.error);
-  await takeSnapshot('before import');
+  await takeSnapshot('before import', { protect: 'restore' });   // protected: later snapshots never push it out
   const tables = Object.keys(STORES).map(n => db[n]);
   stamping.on = false;   // keep the file's own updatedAt values
   try {
@@ -96,7 +96,7 @@ export async function importBackup(file, mode, { settings = 'replace' } = {}) {
 }
 
 // ---- safety snapshots (last 5, in their own database) ----------------------
-export async function takeSnapshot(reason = 'auto') { await saveSnapshot(await buildBackupText(), reason); }
+export async function takeSnapshot(reason = 'auto', opts) { await saveSnapshot(await buildBackupText(), reason, opts); }
 export async function snapshotIfStale(hours = 6) {
   const all = await listSnapshots();
   if (!all.length || Date.now() - all[0].ts > hours * 3600e3) await takeSnapshot('auto');

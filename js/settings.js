@@ -2,8 +2,9 @@ import { db, getSetting } from './db.js';
 import { exportBackup, importBackup, salesCsv, ordersCsv, cashCsv, daysCsv, deliverFile, restoreSnapshot } from './sync.js';
 import { getConn, connect, disconnect, flush, pending, remoteCounts, localCounts, restoreFromSheet, syncStatus, scriptOutdated, resendAll } from './gsync.js';
 import { esc, fmtDateTime, ymd, $ } from './util.js';
-import { toast, confirmBox, choose, overlay, notice } from './ui.js';
-import { listSnapshots } from './safety.js';
+import { toast, confirmBox, choose, overlay, notice, askForm } from './ui.js';
+import { listSnapshots, snapshotLabels } from './safety.js';
+import { replaceGuard } from './backup.js';
 import { APP_VERSION } from './version.js';
 
 export async function backupDue() {
@@ -16,7 +17,7 @@ export async function render(root) {
   const standalone = navigator.standalone || matchMedia('(display-mode: standalone)').matches;
   const est = navigator.storage?.estimate ? await navigator.storage.estimate() : null;
   const conn = await getConn();
-  const snaps = await listSnapshots();
+  const snaps = await listSnapshots(), labels = snapshotLabels(snaps);
   root.innerHTML = `<div class="card"><h2>Backup</h2>
     <div class="kv"><span>Last backup</span><b>${fmtDateTime(await getSetting('lastBackup'))}</b></div>
     ${await backupDue() ? '<p class="warn-text">A market day has been closed since your last backup.</p>' : ''}
@@ -27,7 +28,7 @@ export async function render(root) {
     <input type="file" id="file" accept=".json,application/json" hidden>
     <div class="row"><button class="btn danger" id="restore">Restore (replace all)</button><button class="btn" id="merge">Merge another file</button></div></div>
   <div class="card"><h2>Automatic safety copies</h2><p class="muted">The app keeps its last 5 snapshots on this device (and takes one before any import). Use one if an import goes wrong.</p>
-    ${snaps.map(x => `<div class="kv"><span>${fmtDateTime(x.ts)} <small>${esc(x.reason)}</small></span><button class="btn small danger" data-snap="${x.id}">Restore</button></div>`).join('') || '<p class="muted">None yet.</p>'}</div>
+    ${snaps.map(x => `<div class="kv"><span>${fmtDateTime(x.ts)} <small>${esc(x.reason)}${labels[x.id] ? ' &middot; ' + esc(labels[x.id]) : ''}</small></span><button class="btn small danger" data-snap="${x.id}">Restore</button></div>`).join('') || '<p class="muted">None yet.</p>'}</div>
   <div class="card"><h2>Google Sheet backup</h2>
     ${conn ? `<p><b>Connected \u2713</b> to ${esc(conn.name)}</p>
     ${scriptOutdated(conn) ? '<div class="banner">Your Google Sheet needs a small update. Your data is safe on this device. <button class="btn small" id="howupdate">How to update</button></div>' : ''}
@@ -79,8 +80,18 @@ async function restoreFlow(root) {
   const lines = Object.keys(remote).map(k => `${k}: ${remote[k]} in sheet, ${local[k] || 0} on this device`).join('\n');
   const mode = await choose('Restore from Google Sheet', [['merge', 'Merge (newest change wins)'], ['replace', 'Replace this device with the sheet']], lines);
   if (!mode) return;
-  if (mode === 'replace' && !await confirmBox('Replace everything on this device with the sheet? A safety snapshot is taken first.', 'Replace', true)) return;
-  try { const w = await restoreFromSheet(mode); toast(`Restored ${Object.values(w).reduce((a, b) => a + b, 0)} records`, 4000); setTimeout(() => location.reload(), 800); } catch (e) { toast('Restore failed: ' + e.message, 6000); }
+  let confirmedLoss = false;
+  if (mode === 'replace') {
+    const guard = replaceGuard(remote, local);
+    if (guard.block) return notice('Replace refused', guard.block);
+    if (guard.warn) {   // much smaller than this device: make the user type the word
+      const v = await askForm('Replace with a smaller Sheet?', [{ name: 'word', label: guard.warn + ' Type REPLACE to continue.' }], {}, { submit: 'Replace' });
+      if (!v) return;
+      if (v.word !== 'REPLACE') return notice('Not replaced', 'You did not type REPLACE, so nothing was changed.');
+      confirmedLoss = true;
+    } else if (!await confirmBox('Replace everything on this device with the sheet? A safety snapshot is taken first.', 'Replace', true)) return;
+  }
+  try { const w = await restoreFromSheet(mode, { confirmedLoss }); toast(`Restored ${Object.values(w).reduce((a, b) => a + b, 0)} records`, 4000); setTimeout(() => location.reload(), 800); } catch (e) { await notice('Restore failed', e.message); }
 }
 
 /** Steps for updating the script in the Sheet. The new script text is fetched from this app's own files. */

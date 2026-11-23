@@ -352,3 +352,76 @@ test('one-time repair strips stray export markers from live rows', async () => {
   assert.deepEqual(g.deals, [{ qty: 4, price: 1500 }]);
   assert.equal(await dbm.repairStrayMarkers(), 0, 'runs once');
 });
+
+// ---- protected snapshots, and refusing to replace from a blank or smaller Sheet ----
+const snap = (id, ts, protect) => ({ id, ts, ...(protect ? { protect } : {}) });
+
+test('snapshot rotation keeps the last-restore one, the first of each of the last 3 days, and the newest 5', () => {
+  const at = (d, h) => new Date(2026, 11, 10 - d, 8 + h).getTime();   // local times, so "first of the day" means the same everywhere
+  const list = [snap('restoreOld', at(20, 0), 'restore')];
+  for (let d = 5; d >= 0; d--) for (let h = 0; h < 4; h++) list.push(snap(`d${d}h${h}`, at(d, h)));   // 4 snapshots a day for 6 days
+  const keep = safety.snapshotsToKeep(list);
+  assert.ok(keep.has('restoreOld'), 'the protected pre-restore snapshot survives however old');
+  for (const d of [0, 1, 2]) assert.ok(keep.has(`d${d}h0`), `first snapshot of day ${d} is protected`);
+  assert.ok(!keep.has('d5h0') && !keep.has('d4h1'), 'old unprotected ones are dropped');
+  assert.equal([...keep].filter(id => !['restoreOld', 'd0h0', 'd1h0', 'd2h0'].includes(id)).length, 5);
+  const labels = safety.snapshotLabels(list);
+  assert.match(labels.restoreOld, /Before last restore/); assert.match(labels.d0h0, /First of the day/);
+});
+
+test('several restores in a row never push out the snapshot taken before the last restore; the next restore replaces it', async () => {
+  await seedData('-S');
+  const file = new Blob([await sync.buildBackupText()]);
+  await db.orders.put({ id: 'precious', customer: 'Before the restore', status: 'held', lines: [], payments: [], total: 0 });
+  await sync.importBackup(file, 'restore');
+  const first = (await safety.listSnapshots()).find(s => s.protect === 'restore');
+  assert.ok(first.data.includes('Before the restore'));
+  for (let i = 0; i < 8; i++) await sync.takeSnapshot('filler ' + i);          // lots of other snapshots
+  assert.ok((await safety.listSnapshots()).some(s => s.id === first.id), 'still there after 8 more snapshots');
+  assert.equal((await safety.listSnapshots()).filter(s => s.protect === 'restore').length, 1);
+  await db.orders.put({ id: 'second', customer: 'Before the second restore', status: 'held', lines: [], payments: [], total: 0 });
+  await sync.importBackup(file, 'restore');
+  const protectedNow = (await safety.listSnapshots()).filter(s => s.protect === 'restore');
+  assert.equal(protectedNow.length, 1);
+  assert.ok(protectedNow[0].data.includes('Before the second restore'), 'replaced by the newest pre-restore snapshot');
+});
+
+async function sheetWith(remote) {
+  const gsync = await import('../js/gsync.js');
+  await db.settings.put({ key: 'sheetConn', value: { url: 'https://script.google.com/macros/s/X/exec', key: 'KEY-1234567', name: 'Sheet' } });
+  const real = globalThis.fetch;
+  globalThis.fetch = async url => {
+    const u = new URL(url), store = u.searchParams.get('store'), off = Number(u.searchParams.get('offset')), lim = Number(u.searchParams.get('limit'));
+    const rows = remote[store] || [];
+    return new Response(JSON.stringify({ ok: true, records: rows.slice(off, off + lim), next: off + lim < rows.length ? off + lim : null, scriptVersion: 1 }));
+  };
+  return { gsync, done: () => { globalThis.fetch = real; } };
+}
+
+test('Replace from a blank Sheet is refused and the device is untouched; Merge from it is allowed', async () => {
+  await richData();
+  const before = JSON.stringify(await tablesNow());
+  const { gsync, done } = await sheetWith({});
+  try {
+    await assert.rejects(() => gsync.restoreFromSheet('replace', { confirmedLoss: true }), /blank or wrong/);   // even "confirmed" cannot wipe from a blank Sheet
+    assert.equal(JSON.stringify(await tablesNow()), before);
+    await gsync.restoreFromSheet('merge');
+    assert.equal(JSON.stringify(await tablesNow()), before, 'merge adds nothing and removes nothing');
+  } finally { done(); }
+});
+
+test('Replace from a much smaller Sheet needs confirmation, then goes ahead', async () => {
+  await richData();
+  const full = await tablesNow();
+  const small = { ...full, sales: [], orders: [], products: full.products.slice(0, 2), groups: full.groups, types: full.types, locations: full.locations };
+  small.sales = [{ ...full.sales[0] }];
+  await db.sales.put({ id: 's2', marketDayId: 'd1', timestamp: 2, lines: [], total: 0, paymentMethod: 'card', payments: [], voided: false });   // the device has 2 sales, the Sheet 1
+  const { gsync, done } = await sheetWith(small);
+  try {
+    await assert.rejects(() => gsync.restoreFromSheet('replace'), /fewer records than this device.*Type REPLACE/);
+    assert.ok(await db.sales.get('s2'), 'nothing changed');
+    await gsync.restoreFromSheet('replace', { confirmedLoss: true });
+    assert.equal(await db.sales.get('s2'), undefined);
+    assert.equal((await db.products.toArray()).length, 2);
+  } finally { done(); }
+});

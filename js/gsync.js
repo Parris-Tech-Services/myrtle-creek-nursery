@@ -2,7 +2,7 @@
 import { db, getSetting, setSetting, catalog, stamping } from './db.js';
 import { STORES, SYNCED_SETTINGS, idOf, pendingOps, batch, applyAcks, backoffMs, decodeConnection, chipState } from './syncing.js';
 import { cashRow, importBackup } from './sync.js';
-import { sealBackup } from './backup.js';
+import { sealBackup, replaceGuard } from './backup.js';
 import { APP_VERSION } from './version.js';
 import { rowsFor, tabDefs, TABS_OF_STORE } from './sheetmap.js';
 
@@ -143,7 +143,7 @@ export const disconnect = async () => { await db.settings.delete('sheetConn'); s
 export async function remoteCounts() { const conn = await getConn(); if (!conn) throw new Error('Connect a sheet first'); return (await call(conn, null, { action: 'counts' })).counts; }
 export async function localCounts() { const live = await liveRecords(); return Object.fromEntries(Object.entries(live).map(([k, v]) => [k, v.length])); }
 
-export async function restoreFromSheet(mode) {
+export async function restoreFromSheet(mode, { confirmedLoss = false } = {}) {
   const conn = await getConn();
   const tables = {};
   for (const store of Object.keys(STORES)) {
@@ -152,6 +152,11 @@ export async function restoreFromSheet(mode) {
       const j = await call(conn, null, { action: 'export', store, offset: String(offset), limit: '200' });
       tables[store].push(...j.records); offset = j.next;
     }
+  }
+  if (mode === 'replace') {   // never wipe a device from a blank or much smaller Sheet without being told
+    const guard = replaceGuard(Object.fromEntries(Object.entries(tables).map(([k, v]) => [k, v.length])), await localCounts());
+    if (guard.block) throw new Error(guard.block);
+    if (guard.warn && !confirmedLoss) throw new Error(guard.warn + ' Type REPLACE to confirm.');
   }
   // the records are sealed and validated like a backup file, then written by the same code (snapshot first, one transaction)
   const text = await sealBackup(tables, { appVersion: APP_VERSION });

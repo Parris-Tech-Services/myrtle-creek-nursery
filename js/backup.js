@@ -61,3 +61,18 @@ export function mergePlan(doc, localByTable) {
   }
   return plan;
 }
+
+/**
+ * Pure. Decides whether replacing this device's data with the Sheet's is safe. counts are {table: rows}.
+ * block: an empty Sheet (no sales and no products) is refused. warn: noticeably fewer records than the device
+ * (fewer sales, or under 80% of everything) needs the user to type REPLACE. Merge is never blocked.
+ */
+export function replaceGuard(remote, local) {
+  const total = c => Object.entries(c).filter(([k]) => k !== 'settings').reduce((t, [, n]) => t + n, 0);
+  const rt = total(remote), lt = total(local);
+  if (!(remote.sales > 0) && !(remote.products > 0)) return { block: 'The Google Sheet has no sales and no products, so it looks blank or wrong. Replacing would wipe this device, so it was refused. Check you connected the right Sheet.' };
+  if ((remote.sales || 0) < (local.sales || 0) || rt < 0.8 * lt) {
+    return { warn: `The Google Sheet has fewer records than this device: ${remote.sales || 0} sales and ${rt} records in total, against ${local.sales || 0} sales and ${lt} records here. Replacing would lose the difference.` };
+  }
+  return {};
+}
