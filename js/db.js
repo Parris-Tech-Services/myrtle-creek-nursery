@@ -2,6 +2,7 @@ import { sum, lineNets, ymd } from './util.js';
 import { productStats, suggestQty, minutesOf } from './insights.js';
 import { reservedByProduct } from './orders.js';
 import { STORES } from './syncing.js';
+import { BROAD, productLabel } from './names.js';
 const Dexie = window.Dexie;
 
 export const db = new Dexie('myrtle-creek');
@@ -42,7 +43,7 @@ export const setPeople = list => setSetting('staffNames', list);
 export const getSetting = async (k, d = null) => (await db.settings.get(k))?.value ?? d;
 export const setSetting = (k, value) => db.settings.put({ key: k, value });
 
-const CAT = 'Greens & herbs';
+const CAT = BROAD;
 const SEED = [
   ['Tomato', 'seedling', 'Tube', ['Green Zebra', 'Tigerella', 'Stupice', 'Roma', 'Ox Heart', 'Mortgage Lifter']],
   ['Cherry tomato', 'seedling', 'Tube', ['Broad Ripple Yellow Currant', 'Camp Joy', 'Cherry Cocktail']],
@@ -84,9 +85,8 @@ export async function catalog({ activeOnly = false } = {}) {
   const [types, groups, allProducts, locations] = await Promise.all([db.types.toArray(), db.groups.toArray(), db.products.toArray(), db.locations.toArray()]);
   types.sort((a, b) => (a.sort || 0) - (b.sort || 0) || byName(a, b));
   groups.sort((a, b) => (a.sort || 0) - (b.sort || 0) || byName(a, b));
-  const label = p => (p.category === CAT || p.category === p.name || !p.category) ? p.name : `${p.category} - ${p.name}`;
   const ti = id => types.findIndex(t => t.id === id);
-  const products = allProducts.map(p => ({ ...p, label: label(p) })).sort((a, b) => ti(a.type) - ti(b.type) || (a.category || '').localeCompare(b.category || '') || byName(a, b));
+  const products = allProducts.map(p => ({ ...p, label: productLabel(p) })).sort((a, b) => ti(a.type) - ti(b.type) || (a.category || '').localeCompare(b.category || '') || byName(a, b));
   const idx = a => Object.fromEntries(a.map(x => [x.id, x]));
   const pmap = idx(products);
   return { types, tmap: idx(types), groups, gmap: idx(groups), products: products.filter(p => !activeOnly || p.active), pmap, locations, lmap: idx(locations) };
@@ -172,7 +172,7 @@ export async function packingPlan(locId, forDate = ymd()) {
   const edits = Object.fromEntries((await db.packing.toArray()).filter(p => p.id.startsWith(locId + '|') && p.date === forDate).map(p => [p.id, p.qty]));
   return products.map(p => {
     const st = stats[p.id], lastSold = here[0]?.sold[p.id] || 0, lastTaken = here[0]?.taken[p.id] || 0, heldHere = held[p.id] || 0;
-    const r = suggestQty({ stats: st, everSold: ever[p.id]?.sold || 0, fallback: statsAll[p.id], lastTaken, lastSold, held: heldHere, stock: Math.max(0, stock[p.id] || 0), defaultQty: all.length ? 0 : 4 });
+    const r = suggestQty({ stats: st, everThere: (ever[p.id]?.taken || 0) > 0 || (ever[p.id]?.sold || 0) > 0, fallback: statsAll[p.id], lastTaken, lastSold, held: heldHere, stock: Math.max(0, stock[p.id] || 0), defaultQty: all.length ? 0 : 4 });
     const edited = edits[locId + '|' + p.id];
     return { product: p, lastTaken, lastSold, avg: st?.avgSold || 0, soldOut: st?.soldOut ? st.avgSoldOutMin : null, soldOutVisits: st?.soldOut || 0, held: heldHere, suggested: r.qty, reason: r.reason, demand: r.demand, shortfall: r.shortfall, edited, qty: edited ?? r.qty, nursery: stock[p.id] || 0, visits: here.slice(0, 3).length };
   });
@@ -187,4 +187,22 @@ export async function nurseryNeeds() {
   }
   for (const [id, n] of Object.entries(held)) if (!out[id] && n > (stock[id] || 0)) out[id] = { demand: n, have: stock[id] || 0, short: n - (stock[id] || 0) };
   return out;
+}
+
+/**
+ * One-time repair: an earlier build could save export-library markers ("$types") inside real rows, which made later backups unrestorable.
+ * Strip them from every row in this browser. Runs once per device.
+ */
+export async function repairStrayMarkers() {
+  if (await getSetting('markersRepaired')) return 0;
+  let n = 0;
+  stamping.on = false;
+  try {
+    for (const name of Object.keys(STORES)) {
+      const dirty = (await db[name].toArray()).filter(r => '$types' in r || '$' in r);
+      for (const r of dirty) { const { $types, $, ...clean } = r; await db[name].put(clean); n++; }
+    }
+    await setSetting('markersRepaired', true);
+  } finally { stamping.on = true; }
+  return n;
 }

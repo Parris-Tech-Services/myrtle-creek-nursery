@@ -74,10 +74,10 @@ export function highlights(here, others = {}) {
 
 /**
  * Packing suggestion. Uses this market's recent visits; otherwise the average across all markets (`fallback`), then `defaultQty`.
- * A product that has ever sold here keeps a minimum of 2. Returns {qty, demand, shortfall, reason}:
+ * A product that has ever been taken (or sold) here keeps a minimum of 2. Returns {qty, demand, shortfall, reason}:
  * demand includes held orders; qty is demand capped by nursery stock; shortfall is how many more the nursery would need.
  */
-export function suggestQty({ stats, everSold = 0, fallback = null, lastTaken = 0, lastSold = 0, held = 0, stock = Infinity, defaultQty = 0 }) {
+export function suggestQty({ stats, everThere = false, fallback = null, lastTaken = 0, lastSold = 0, held = 0, stock = Infinity, defaultQty = 0 }) {
   let demand, reason;
   if (stats?.visits) {
     const n = stats.visits;
@@ -94,7 +94,7 @@ export function suggestQty({ stats, everSold = 0, fallback = null, lastTaken = 0
   } else if (fallback?.visits) {
     demand = fallback.avgSold * 1.2; reason = `new here: average across markets (${fallback.visits} visit${fallback.visits === 1 ? '' : 's'})`;
   } else { demand = defaultQty; reason = defaultQty ? 'no history yet: starting amount' : 'no history yet'; }
-  if (everSold > 0 && demand < 2) { demand = 2; reason += '; keeping a minimum as it has sold here'; }
+  if (everThere && demand < 2) { demand = 2; reason += '; keeping a minimum as it has been taken here'; }
   const wanted = Math.round(demand) + held;
   return { qty: Math.max(0, Math.min(wanted, stock)), demand: wanted, shortfall: Number.isFinite(stock) ? Math.max(0, wanted - stock) : 0, reason: held ? `${reason}; includes ${held} held` : reason };
 }

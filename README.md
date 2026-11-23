@@ -67,4 +67,4 @@ Owner's one-time template: create an empty Google Sheet, **Extensions -> Apps Sc
 4. After any change, bump `VERSION` in `sw.js` and `APP_VERSION` in `js/version.js` to the same new value so devices pick up the update.
 
 ## For developers
-Plain HTML, CSS and JavaScript modules, no build step. Libraries are in `vendor/` (Dexie, dexie-export-import, PapaParse) and the title font Bagel Fat One (SIL Open Font License, `vendor/OFL-bagel-fat-one.txt`). Run the tests with `node --test tests/*.test.mjs`. Serve with `Cache-Control: no-store` while developing.
+Plain HTML, CSS and JavaScript modules, no build step. Libraries are in `vendor/` (Dexie, PapaParse) and the title font Bagel Fat One (SIL Open Font License, `vendor/OFL-bagel-fat-one.txt`). Run the tests with `node --test tests/*.test.mjs`. Serve with `Cache-Control: no-store` while developing.

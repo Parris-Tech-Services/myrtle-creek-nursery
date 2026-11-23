@@ -8,7 +8,7 @@ const { priceBasket } = await import('../js/pricing.js');
 const { unitPriceFor, dealsFor } = await import('../js/pricing.js');
 const sync = await import('../js/sync.js');
 const safety = await import('../js/safety.js');
-const { sealBackup, validateBackup } = await import('../js/backup.js');
+const { sealBackup, validateBackup, hasMarker } = await import('../js/backup.js');
 const flow = await import('../js/orderflow.js');
 const close = await import('../js/stockclose.js');
 const basket = await import('../js/basketstore.js');
@@ -59,7 +59,7 @@ test('backup: leaves out the Google Sheet key and other device-only settings, an
   assert.ok(!text.includes('SECRET-KEY-123'));
   const v = await validateBackup(text);
   assert.equal(v.ok, true);
-  const keys = JSON.parse(text).data.data.find(t => t.tableName === 'settings').rows.map(r => r.key);
+  const keys = JSON.parse(text).tables.settings.map(r => r.key);
   assert.deepEqual(keys, ['nextFloat']);
 });
 
@@ -90,16 +90,21 @@ test('a truncated backup is rejected and nothing changes', async () => {
   assert.equal((await safety.listSnapshots()).length, snapsBefore, 'no snapshot either: nothing was touched');
 });
 
-test('a backup with a missing table, a wrong count or edited data is rejected', async () => {
+test('a backup with a missing table, a wrong count, edited data or export markers is rejected', async () => {
   await seedData('-C');
   const doc = JSON.parse(await sync.buildBackupText());
-  const noOrders = structuredClone(doc); noOrders.data.data = noOrders.data.data.filter(t => t.tableName !== 'orders');
+  const noOrders = structuredClone(doc); delete noOrders.tables.orders;
   assert.match((await validateBackup(JSON.stringify(noOrders))).error, /missing: orders/);
-  const edited = structuredClone(doc); edited.data.data.find(t => t.tableName === 'stock').rows[0].qty = 999;
+  const edited = structuredClone(doc); edited.tables.stock[0].qty = 999;
   assert.match((await validateBackup(JSON.stringify(edited))).error, /changed or damaged/);
-  const short = structuredClone(doc); short.data.data.find(t => t.tableName === 'orders').rows = [];
+  const short = structuredClone(doc); short.tables.orders = [];
   assert.match((await validateBackup(JSON.stringify(short))).error, /do not match/);
-  assert.match((await validateBackup('{"formatName":"dexie"')).error, /not a complete backup/);
+  assert.match((await validateBackup('{"format":"mcn-backup"')).error, /not a complete backup/);
+  assert.match((await validateBackup('{"formatName":"dexie","data":{}}')).error, /not a Myrtle Creek backup/);
+  const marked = JSON.parse(await sealBackup({ ...doc.tables, groups: [{ id: 'g', name: 'G', deals: [], $types: { deals: 'arrayNonindexKeys' } }] }));
+  assert.match((await validateBackup(JSON.stringify(marked))).error, /damaged \(export markers/);
+  assert.equal(hasMarker({ a: [{ b: { $: 1 } }] }), true);
+  assert.equal(hasMarker({ price: 5, deals: [{ qty: 4 }] }), false);
 });
 
 test('merge: the newer updatedAt wins, an undated row counts as older, new rows are added, nothing else is lost', async () => {
@@ -249,4 +254,101 @@ test('closing when nursery stock is too low: stock stops at 0, is flagged, and r
   assert.equal((await db.stock.get('p1|nursery')).qty, 0);
   await close.reopenDayDb('d1');
   assert.equal((await db.stock.get('p1|nursery')).qty, 2, 'back to what it was, not inflated');
+});
+
+// ---- round trips: the real export, import, snapshot and Sheet-restore code on a database full of arrays and nested objects ----
+async function richData() {
+  await seedIfEmpty();
+  await db.marketDays.put({ id: 'd1', date: '2026-12-01', location: 'jamison', status: 'closed', float: 5000, countedCash: 12000, floatCounts: { 2000: 2, 100: 10 }, closeCounts: { 5000: 1, 2000: 3 },
+    staff: [{ name: 'Luca', arrive: '07:00', leave: '16:00' }, { name: 'Ysis', arrive: '', leave: '' }], keepFloat: 10000, weather: 'sunny', crowd: 4, oversoldApplied: { p1: 2 }, oversoldDeducted: { p1: 1 } });
+  await db.sales.put({ id: 's1', marketDayId: 'd1', timestamp: 1, lines: [{ productId: 'p1', qty: 4, unitPrice: 400, lineType: 'normal', note: '' }, { productId: 'misc', name: 'Pot', qty: 1, unitPrice: 300, lineType: 'other', note: 'x' }],
+    total: 1500, dealSavings: 100, savingsByGroup: { seedling: 100 }, paymentMethod: 'split', payments: [{ method: 'cash', amount: 1000 }, { method: 'card', amount: 500 }], voided: false, cashTendered: 2000, changeGiven: 1000, rounding: 0 });
+  await db.orders.put({ id: 'o1', customer: 'Sam', status: 'held', fulfilment: 'delivery', address: '1 Road', lines: [{ productId: 'p1', qty: 2, unitPrice: 500, lineType: 'normal' }], items: 1000, total: 1500, deliveryFee: 500,
+    payments: [{ id: 'pay1', amount: 500, method: 'card', date: '2026-12-01', ts: 5, marketDayId: null }] });
+  await db.cashMovements.put({ id: 'c1', marketDayId: 'd1', type: 'cashOut', category: 'fuel', amount: 3000, method: 'cash', counts: { 2000: 1, 1000: 1 }, note: 'Diesel' });
+  await db.settings.put({ key: 'staffNames', value: [{ name: 'Luca' }, { name: 'Ysis', hidden: true }] });
+  await db.settings.put({ key: 'nextFloat', value: { amount: 10000, counts: { 2000: 2, 1000: 4 } } });
+  await db.settings.put({ key: 'sheetConn', value: { url: 'https://x', key: 'KEY-1234567' } });
+  await db.packing.put({ id: 'jamison|p1', qty: 5, date: '2026-12-01' });
+}
+const tablesNow = async () => { const t = {}; for (const n of Object.keys((await import('../js/syncing.js')).STORES)) t[n] = (await db[n].toArray()).filter(r => n !== 'settings' || r.key === 'staffNames' || r.key === 'nextFloat').sort((a, b) => String(a.id ?? a.key).localeCompare(String(b.id ?? b.key))); return t; };
+const asBlob = text => new Blob([text], { type: 'application/json' });
+
+test('round trip: export, restore, export, restore again: identical every time, no markers anywhere', async () => {
+  await richData();
+  const original = await tablesNow();
+  const a = await sync.buildBackupText();
+  assert.ok(!a.includes('$types'));
+  await sync.importBackup(asBlob(a), 'restore');
+  assert.deepEqual(await tablesNow(), original);
+  const b = await sync.buildBackupText();
+  assert.deepEqual(JSON.parse(b).tables, JSON.parse(a).tables);
+  await sync.importBackup(asBlob(b), 'restore');
+  assert.deepEqual(await tablesNow(), original);
+  for (const t of Object.values(await tablesNow())) assert.equal(hasMarker(t), false);
+  assert.equal((await db.settings.get('sheetConn')).value.key, 'KEY-1234567');
+});
+
+test('round trip through snapshots: takeSnapshot then restoreSnapshot, twice, with changes in between', async () => {
+  await richData();
+  const original = await tablesNow();
+  await sync.takeSnapshot('first');
+  const first = (await safety.listSnapshots()).find(s => s.reason === 'first');
+  await db.orders.clear(); await db.groups.clear();
+  await sync.restoreSnapshot(first.id);
+  assert.deepEqual(await tablesNow(), original);
+  await sync.takeSnapshot('second');                       // a snapshot taken AFTER a restore must also restore
+  const second = (await safety.listSnapshots()).find(s => s.reason === 'second');
+  await db.sales.clear();
+  await sync.restoreSnapshot(second.id);
+  assert.deepEqual(await tablesNow(), original);
+});
+
+test('round trip: merge, then export and restore the merged data', async () => {
+  await richData();
+  const fileText = await sync.buildBackupText();
+  await db.orders.update('o1', { customer: 'Changed locally' });        // newer locally than the file
+  await db.types.put({ id: 'extra', name: 'Only local' });
+  await sync.importBackup(asBlob(fileText), 'merge');
+  assert.equal((await db.orders.get('o1')).customer, 'Changed locally');
+  assert.ok(await db.types.get('extra'));
+  const merged = await tablesNow();
+  const again = await sync.buildBackupText();
+  await sync.importBackup(asBlob(again), 'restore');
+  assert.deepEqual(await tablesNow(), merged);
+  assert.equal(hasMarker(merged), false);
+});
+
+test('restore from the Google Sheet goes through the same validated path and the result exports and restores cleanly', async () => {
+  await richData();
+  const gsync = await import('../js/gsync.js');
+  const remote = await tablesNow();                                      // what the sheet's _data tab would hold, as parsed json records
+  await db.settings.put({ key: 'sheetConn', value: { url: 'https://script.google.com/macros/s/X/exec', key: 'KEY-1234567', name: 'Sheet' } });
+  const real = globalThis.fetch;
+  globalThis.fetch = async url => {
+    const u = new URL(url), store = u.searchParams.get('store'), off = Number(u.searchParams.get('offset')), lim = Number(u.searchParams.get('limit'));
+    const rows = remote[store] || [];
+    return new Response(JSON.stringify({ ok: true, records: rows.slice(off, off + lim), next: off + lim < rows.length ? off + lim : null, scriptVersion: 1 }));
+  };
+  try {
+    await db.orders.clear(); await db.groups.clear(); await db.sales.clear();
+    const counts = await gsync.restoreFromSheet('replace');
+    assert.equal(counts.orders, 1);
+  } finally { globalThis.fetch = real; }
+  assert.deepEqual(await tablesNow(), remote);
+  const text = await sync.buildBackupText();
+  await db.orders.clear();
+  await sync.importBackup(asBlob(text), 'restore');
+  assert.deepEqual(await tablesNow(), remote);
+  assert.ok((await safety.listSnapshots()).some(s => s.reason === 'before import'));
+  assert.equal((await db.settings.get('sheetConn')).value.key, 'KEY-1234567', 'this device keeps its connection');
+});
+
+test('one-time repair strips stray export markers from live rows', async () => {
+  await db.groups.put({ id: 'g1', name: 'G', unit: 400, deals: [{ qty: 4, price: 1500 }], $types: { deals: 'arrayNonindexKeys' } });
+  assert.equal(await dbm.repairStrayMarkers(), 1);
+  const g = await db.groups.get('g1');
+  assert.equal('$types' in g, false);
+  assert.deepEqual(g.deals, [{ qty: 4, price: 1500 }]);
+  assert.equal(await dbm.repairStrayMarkers(), 0, 'runs once');
 });

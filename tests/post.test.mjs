@@ -47,10 +47,10 @@ test('punnets merge varieties of one plant and sort alphabetically', () => {
 
 test('limited numbers and new this week', () => {
   const { full } = buildPost({ ...base, prevIds: new Set(['zebra', 'roma']) });
-  assert.ok(full.includes('Limited numbers: Cherry tomato (Camp Joy), Fruit trees (Fig)'));
+  assert.ok(full.includes('Limited numbers: Camp Joy (cherry tomato), Fig (fruit tree)'));
   assert.ok(full.includes('NEW this week: '));
   assert.ok(!full.includes('Limited numbers: Roma'));
-  assert.ok(!/Limited numbers:.*\bPurple\b(?!\))/.test(full));
+  assert.ok(!/Limited numbers:.*(^|, )Purple(,|$)/.test(full));
   assert.equal(buildPost({ ...base, options: { emoji: false, limited: false, fresh: false }, prevIds: new Set(['zebra']) }).full.includes('Limited'), false);
 });
 

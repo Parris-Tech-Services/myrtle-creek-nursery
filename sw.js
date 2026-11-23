@@ -1,12 +1,12 @@
 // Cache-first service worker. Bump VERSION whenever any app file changes.
-const VERSION = 'mcn-v22';
+const VERSION = 'mcn-v24';
 const FILES = [
   './',
   'index.html',
   'manifest.webmanifest',
   'css/style.css',
-  'js/app.js', 'js/backup.js', 'js/basketstore.js', 'js/bestsellers.js', 'js/cash.js', 'js/changecalc.js', 'js/checklist.js', 'js/db.js', 'js/gsync.js', 'js/insights.js', 'js/market.js', 'js/nursery.js', 'js/orderflow.js', 'js/orders.js', 'js/ordersview.js', 'js/packing.js', 'js/post.js', 'js/postview.js', 'js/pricing.js', 'js/products.js', 'js/reports.js', 'js/safety.js', 'js/sell.js', 'js/settings.js', 'js/sheetmap.js', 'js/staff.js', 'js/stockclose.js', 'js/sync.js', 'js/syncing.js', 'js/ui.js', 'js/util.js', 'js/version.js',
-  'vendor/dexie.min.js', 'vendor/dexie-export-import.js', 'vendor/papaparse.min.js', 'vendor/bagel-fat-one.woff2', 'apps-script.gs', 'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png',
+  'js/app.js', 'js/backup.js', 'js/basketstore.js', 'js/bestsellers.js', 'js/cash.js', 'js/changecalc.js', 'js/checklist.js', 'js/db.js', 'js/gsync.js', 'js/insights.js', 'js/market.js', 'js/names.js', 'js/nursery.js', 'js/orderflow.js', 'js/orders.js', 'js/ordersview.js', 'js/packing.js', 'js/post.js', 'js/postview.js', 'js/pricing.js', 'js/products.js', 'js/reports.js', 'js/safety.js', 'js/sell.js', 'js/settings.js', 'js/sheetmap.js', 'js/staff.js', 'js/stockclose.js', 'js/sync.js', 'js/syncing.js', 'js/ui.js', 'js/util.js', 'js/version.js',
+  'vendor/dexie.min.js', 'vendor/papaparse.min.js', 'vendor/bagel-fat-one.woff2', 'apps-script.gs', 'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png',
 ];
 // No automatic skipWaiting: a new version waits until the page says it is safe (no market day open).
 self.addEventListener('install', e => e.waitUntil(caches.open(VERSION).then(c => c.addAll(FILES.map(f => new Request(f, { cache: 'reload' }))))));

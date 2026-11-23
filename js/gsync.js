@@ -1,7 +1,9 @@
 // Google Sheet sync: confirmed push (the sheet must acknowledge each id) and restore from the sheet.
 import { db, getSetting, setSetting, catalog, stamping } from './db.js';
-import { STORES, SYNCED_SETTINGS, idOf, pendingOps, batch, applyAcks, backoffMs, mergeRecords, decodeConnection, chipState } from './syncing.js';
-import { takeSnapshot, cashRow } from './sync.js';
+import { STORES, SYNCED_SETTINGS, idOf, pendingOps, batch, applyAcks, backoffMs, decodeConnection, chipState } from './syncing.js';
+import { cashRow, importBackup } from './sync.js';
+import { sealBackup } from './backup.js';
+import { APP_VERSION } from './version.js';
 import { rowsFor, tabDefs, TABS_OF_STORE } from './sheetmap.js';
 
 /** The Sheet's script must be at least this version for the app's sync to work (see SCRIPT_VERSION in apps-script.gs). */
@@ -143,31 +145,17 @@ export async function localCounts() { const live = await liveRecords(); return O
 
 export async function restoreFromSheet(mode) {
   const conn = await getConn();
-  await takeSnapshot('before restore from sheet');
-  const remote = {};
+  const tables = {};
   for (const store of Object.keys(STORES)) {
-    remote[store] = [];
+    tables[store] = [];
     for (let offset = 0; offset !== null && offset !== undefined;) {
       const j = await call(conn, null, { action: 'export', store, offset: String(offset), limit: '200' });
-      remote[store].push(...j.records); offset = j.next;
+      tables[store].push(...j.records); offset = j.next;
     }
   }
-  const written = {};
-  stamping.on = false;
-  try {
-    await db.transaction('rw', db.tables.filter(t => t.name in STORES), db.syncState, async () => {
-      for (const [store, recs] of Object.entries(remote)) {
-        const local = mode === 'merge' ? await db[store].toArray() : [];
-        const { write } = mergeRecords(store, local, recs, mode);
-        if (mode === 'replace' && store !== 'settings') await db[store].clear();   // settings hold this device's own state
-        await db[store].bulkPut(write);
-        await db.syncState.bulkPut(write.map(r => ({ id: store + ':' + idOf(store, r), acked: r.updatedAt || 0 })));
-        written[store] = write.length;
-      }
-      await db.settings.put({ key: 'seeded', value: true });
-      await db.settings.put({ key: 'sheetConn', value: conn });   // keep this device connected
-    });
-  } finally { stamping.on = true; }
+  // the records are sealed and validated like a backup file, then written by the same code (snapshot first, one transaction)
+  const text = await sealBackup(tables, { appVersion: APP_VERSION });
+  await importBackup(new Blob([text], { type: 'application/json' }), mode, { settings: 'keep' });
   await refreshPending();
-  return written;
+  return Object.fromEntries(Object.entries(tables).map(([k, v]) => [k, v.length]));
 }

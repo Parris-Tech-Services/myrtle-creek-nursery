@@ -2,11 +2,11 @@ import { db, setSetting, catalog, salesForDay, dayCash, stamping } from './db.js
 import { STORES } from './syncing.js';
 import { sealBackup, validateBackup, mergePlan, DEVICE_KEYS } from './backup.js';
 import { saveSnapshot, listSnapshots, getSnapshot } from './safety.js';
+import { APP_VERSION } from './version.js';
 import { DENOMS, denomLabel } from './cash.js';
 import { ymd, lineNets } from './util.js';
 import { paidTotal, paymentStatus } from './orders.js';
 import { peopleText, totalPersonHours, netPerHour } from './staff.js';
-const { exportDB } = window.DexieExportImport;
 
 /** One row per market day: float and close counts by denomination, expected vs counted, kept and banked. */
 export async function cashRow(d, lmap) {
@@ -38,7 +38,6 @@ export async function cashCsv() {
 }
 
 // ---- backup / restore ----------------------------------------------------
-const BACKUP_SKIP = new Set(['syncState']);
 /** Hand a file to the iOS share sheet if possible, otherwise download it. Returns true if delivered. */
 export async function deliverFile(blob, name) {
   const file = new File([blob], name, { type: blob.type || 'application/octet-stream' });
@@ -51,10 +50,11 @@ export async function deliverFile(blob, name) {
   return true;
 }
 
-/** The whole database as a sealed backup (format marker, counts, checksum). Device-only settings such as the Google Sheet key are left out. */
+/** The whole database as a sealed backup (format, counts, checksum). Device-only settings such as the Google Sheet key are left out. */
 export async function buildBackupText() {
-  const blob = await exportDB(db, { filter: t => !BACKUP_SKIP.has(t) });
-  return sealBackup(await blob.text());
+  const tables = {};
+  for (const name of Object.keys(STORES)) tables[name] = await db[name].toArray();
+  return sealBackup(tables, { appVersion: APP_VERSION });
 }
 
 export async function exportBackup() {
@@ -67,8 +67,9 @@ export async function exportBackup() {
  * mode 'restore' replaces everything; 'merge' adds rows and replaces only rows the file has a newer updatedAt for.
  * The file is fully validated first and everything is written in ONE transaction, so a bad file changes nothing.
  * A snapshot of the current data is saved (in its own database) before anything is written. This device's own settings are kept.
+ * settings 'keep' (used by restore from the Google Sheet, which only holds some settings) leaves existing settings alone instead of replacing them.
  */
-export async function importBackup(file, mode) {
+export async function importBackup(file, mode, { settings = 'replace' } = {}) {
   const v = await validateBackup(await file.text());
   if (!v.ok) throw new Error(v.error);
   await takeSnapshot('before import');
@@ -78,20 +79,20 @@ export async function importBackup(file, mode) {
     await db.transaction('rw', [...tables, db.syncState], async () => {
       if (mode === 'merge') {
         const local = {};
-        for (const t of v.doc.data.data) if (t.tableName in STORES) local[t.tableName] = await db[t.tableName].toArray();
+        for (const name of Object.keys(v.doc.tables)) local[name] = await db[name].toArray();
         for (const [name, rows] of Object.entries(mergePlan(v.doc, local))) await db[name].bulkPut(rows);
       } else {
-        for (const t of v.doc.data.data) {
-          if (!(t.tableName in STORES)) continue;
-          if (t.tableName === 'settings') await db.settings.bulkDelete((await db.settings.toCollection().primaryKeys()).filter(k => !DEVICE_KEYS.includes(k)));
-          else await db[t.tableName].clear();
-          await db[t.tableName].bulkPut(t.rows);
+        for (const [name, rows] of Object.entries(v.doc.tables)) {
+          if (name === 'settings') { if (settings === 'replace') await db.settings.bulkDelete((await db.settings.toCollection().primaryKeys()).filter(k => !DEVICE_KEYS.includes(k))); }
+          else await db[name].clear();
+          await db[name].bulkPut(rows);
         }
       }
       await db.settings.put({ key: 'seeded', value: true });   // never re-seed the example products over restored data
       await db.syncState.clear();                                // everything is re-sent; the sheet keeps whichever copy is newer
     });
   } finally { stamping.on = true; }
+  return v.counts;
 }
 
 // ---- safety snapshots (last 5, in their own database) ----------------------

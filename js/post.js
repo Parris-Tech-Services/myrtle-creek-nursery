@@ -2,7 +2,7 @@
 
 const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
-const BROAD = 'Greens & herbs';   // catch-all sub-category: list its items on their own, not under a heading
+import { BROAD, productLabel } from './names.js';
 
 export const dateLabel = ymd => { const d = new Date(ymd + 'T12:00:00Z'); return `${DAYS[d.getUTCDay()]} ${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]}`; };
 export const priceLabel = c => '$' + (c % 100 ? (c / 100).toFixed(2) : String(c / 100));
@@ -12,8 +12,8 @@ const cap = s => s.charAt(0).toUpperCase() + s.slice(1);
 const catHeading = c => (/tomato$/i.test(c) ? c.replace(/tomato$/i, m => m + 'es') : c).toUpperCase();
 const byName = (a, b) => a.localeCompare(b, 'en', { sensitivity: 'base' });
 const list = a => [...a].sort(byName);
-/** "Basil (Purple)", not just "Purple": a bare variety name means little in a post. */
-const fullName = p => (p.category && p.category !== BROAD && p.category !== p.name ? `${p.category} (${p.name})` : p.name);
+/** "Purple (basil)", not just "Purple": a bare variety name means little in a post. */
+const fullName = productLabel;
 
 export const DEFAULTS = { emoji: true, limited: true, limit: 6, fresh: true, pickup: false, pickupText: '', hold: false, signoff: '' };
 

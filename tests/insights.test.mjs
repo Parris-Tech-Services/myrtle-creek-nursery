@@ -71,5 +71,7 @@ test('packing: demand, shortfall and fallbacks', () => {
   assert.equal(suggestQty({ stats: undefined, stock: 50, defaultQty: 4 }).qty, 4);
   assert.equal(suggestQty({ stats: undefined, stock: 3, defaultQty: 4 }).qty, 3);
   const zero = productStats([V('1', { b: 10 }, { b: 0 })]).b;
-  assert.ok(suggestQty({ stats: zero, everSold: 6, lastTaken: 10, lastSold: 0, stock: 50 }).qty >= 2, 'keeps a minimum for something that has sold here');
+  assert.ok(suggestQty({ stats: zero, everThere: true, lastTaken: 10, lastSold: 0, stock: 50 }).qty >= 2, 'keeps a minimum for something that was taken here');
+  const takenOnly = productStats([V('1', { c: 10 }, {})]).c;
+  assert.ok(suggestQty({ stats: takenOnly, everThere: true, lastTaken: 10, stock: 50 }).qty >= 2, 'even when it sold 0 on its only visit');
 });

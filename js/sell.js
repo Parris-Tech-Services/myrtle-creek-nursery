@@ -5,7 +5,7 @@ import { priceBasket, unitPriceFor, dealsFor, makeLine } from './pricing.js';
 import { productStats } from './insights.js';
 import { flush } from './gsync.js';
 import { esc, money, uid, sum, groupBy, ymd, $, $$, fmtDate, clampQty, MAX_QTY } from './util.js';
-import { askForm, toast, undoToast, overlay, guard } from './ui.js';
+import { askForm, toast, undoToast, overlay, guard, confirmBox } from './ui.js';
 import { changeDialog } from './changecalc.js';
 import { pickupsFor, showPickups } from './ordersview.js';
 import { checklistCard, wireChecklist } from './checklist.js';
@@ -160,6 +160,7 @@ export async function render(root) {
 
   async function markSoldOut(id) {   // two taps: Sold out, then the product. Time is now.
     soldOutMode = false; $('#modehint').hidden = true;
+    if (!(sold[id] > 0) && !await confirmBox(`No sales of ${pmap[id].label} recorded today. Mark sold out anyway?`, 'Mark sold out')) return;
     const rec = { id: uid(), marketDayId: day.id, productId: id, ts: Date.now() };
     await db.soldOut.put(rec);
     undoToast(`${pmap[id].label}: sold out at ${new Date(rec.ts).toLocaleTimeString('en-AU', { hour: 'numeric', minute: '2-digit' })}`, async () => { await db.soldOut.delete(rec.id); render(root); });

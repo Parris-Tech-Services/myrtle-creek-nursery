@@ -1,4 +1,4 @@
-import { db, seedIfEmpty, getSetting, setSetting, openDay } from './db.js';
+import { db, seedIfEmpty, repairStrayMarkers, getSetting, setSetting, openDay } from './db.js';
 import { snapshotIfStale, takeSnapshot } from './sync.js';
 import { startSyncLoop, syncChip, flush, refreshPending } from './gsync.js';
 import { backupOverdue } from './syncing.js';
@@ -120,6 +120,7 @@ new MutationObserver(() => {
     await window.Dexie.delete('myrtle-creek'); location.reload(); return;
   }
   await seedIfEmpty();
+  await repairStrayMarkers();
   navigator.storage?.persist?.().catch(() => {});
   addEventListener('hashchange', show);
   addEventListener('syncchange', chip);

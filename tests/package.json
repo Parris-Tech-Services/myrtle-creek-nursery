@@ -4,7 +4,6 @@
   "description": "Dev-only dependencies for the integration tests. Not shipped, not precached.",
   "devDependencies": {
     "dexie": "4.0.10",
-    "dexie-export-import": "4.1.4",
     "fake-indexeddb": "6.0.0"
   }
 }
