@@ -41,7 +41,7 @@ Every sale, order, loss, stock change, price and setting is copied to your own G
 1. Open the copy link you were given and tap **Make a copy**.
 2. In your copy: **Extensions -> Apps Script -> Deploy -> New deployment -> Web app**. Execute as **Me**, Who has access **Anyone**, then **Deploy**.
 3. Approve the permissions. If Google says **"Google hasn't verified this app"**, tap **Advanced**, then **Go to ... (unsafe)**. That is normal: it is your own copy of the script.
-4. Copy the web app URL and open it in a browser, or in the Sheet use the menu **Myrtle Creek -> Show connection code**.
+4. When Google says "Deployment successfully updated", click the **Web app URL** (the blue link). It opens a page with your connection code. Copy it, then click **Done**. (You can get the code again later from the Sheet menu **Myrtle Creek -> Show connection code**.)
 5. Copy the code.
 6. In the app: **Backup -> Connect Google Sheet**, paste the code. It says "Connected" and starts syncing.
 
