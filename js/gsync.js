@@ -6,6 +6,7 @@ import { paidTotal, paymentStatus } from './orders.js';
 import { peopleText, totalPersonHours } from './staff.js';
 
 const status = { error: null, failures: 0, nextTry: 0, busy: false, pending: 0 };
+export const syncStatus = status;
 const notify = () => window.dispatchEvent(new Event('syncchange'));
 export const getConn = () => getSetting('sheetConn');
 
@@ -65,7 +66,11 @@ async function buildItems(ops) {
 
 async function call(conn, init, params) {
   const url = init ? conn.url : conn.url + (conn.url.includes('?') ? '&' : '?') + new URLSearchParams({ key: conn.key, ...params });
-  const res = await fetch(url, init ? { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify({ key: conn.key, ...init }) } : {});
+  const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 90000);   // never let a stuck request block syncing
+  let res;
+  try { res = await fetch(url, { ...(init ? { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify({ key: conn.key, ...init }) } : {}), signal: ctl.signal }); }
+  catch (e) { throw new Error(e.name === 'AbortError' ? 'The Google Sheet took too long to answer' : 'Could not reach the Google Sheet. If this keeps happening, redeploy the script as a New version (' + e.message + ')'); }
+  finally { clearTimeout(timer); }
   if (!res.ok) throw new Error('HTTP ' + res.status);
   const j = await res.json();
   if (!j.ok) throw new Error(j.error || 'The sheet refused the request');

@@ -1,6 +1,6 @@
 import { db, getSetting, setSetting } from './db.js';
 import { exportBackup, importBackup, salesCsv, ordersCsv, cashCsv, daysCsv, deliverFile, restoreSnapshot } from './sync.js';
-import { getConn, connect, disconnect, flush, pending, remoteCounts, localCounts, restoreFromSheet } from './gsync.js';
+import { getConn, connect, disconnect, flush, pending, remoteCounts, localCounts, restoreFromSheet, syncStatus } from './gsync.js';
 import { esc, fmtDateTime, ymd, $ } from './util.js';
 import { toast, confirmBox, choose } from './ui.js';
 import { APP_VERSION } from './version.js';
@@ -30,7 +30,7 @@ export async function render(root) {
   <div class="card"><h2>Google Sheet backup</h2>
     ${conn ? `<p><b>Connected \u2713</b> to ${esc(conn.name)}</p>
     <div class="kv"><span>Waiting to send</span><b>${(await pending()).length}</b></div>
-    <div class="kv"><span>Last successful sync</span><b>${fmtDateTime(await getSetting('lastSync'))}</b></div>
+    <div class="kv"><span>Last successful sync</span><b>${fmtDateTime(await getSetting('lastSync'))}</b></div>${syncStatus.error ? `<p class="tag bad">Last sync problem: ${esc(syncStatus.error)}</p>` : ''}
     <div class="row"><button class="btn primary" id="sync">Sync now</button><button class="btn" id="gres">Restore from Google Sheet</button><button class="btn danger" id="disc">Disconnect</button></div>`
     : `<p class="muted">Copies every sale, order and stock change to your own Google Sheet and keeps a copy you can restore from.</p>
     <label><span>Connect Google Sheet: paste the connection code</span><textarea id="code" rows="3" placeholder="Paste code here"></textarea></label>
@@ -52,7 +52,7 @@ export async function render(root) {
     if (b.dataset.snap) { if (await confirmBox('Replace all current data with this snapshot?', 'Restore', true)) { await restoreSnapshot(b.dataset.snap); location.reload(); } return; }
     if (b.id === 'csv') return deliverFile(new Blob([await salesCsv()], { type: 'text/csv' }), `myrtle-creek-sales-${ymd()}.csv`);
     if (b.id === 'restore' || b.id === 'merge') { mode = b.id; if (mode === 'restore' && !await confirmBox('Restore will REPLACE all data on this device with the file. Continue?', 'Continue', true)) return; $('#file').click(); }
-    if (b.id === 'sync') { const r = await flush({ force: true }); toast(r.error ? 'Sync error: ' + r.error : navigator.onLine ? `Synced (${r.sent} sent)` : 'No signal. It will sync when you are back online.', 4000); return render(root); }
+    if (b.id === 'sync') { if (syncStatus.busy) { toast('Already syncing. This can take a minute the first time.', 4000); return; } const r = await flush({ force: true }); toast(r.error ? 'Sync error: ' + r.error : navigator.onLine ? `Synced (${r.sent} sent)` : 'No signal. It will sync when you are back online.', 4000); return render(root); }
     if (b.id === 'connect') {
       try { const name = await connect($('#code').value); toast(`Connected \u2713 to ${name}`, 3500); } catch (e) { toast(e.message, 5000); }
       return render(root);
