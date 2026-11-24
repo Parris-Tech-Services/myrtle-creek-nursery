@@ -1,5 +1,5 @@
 import { db, getPeople, setPeople, catalog, openDay, salesForDay, soldByProduct, dayReceipts, dayCash, owed, adjustStock, nurseryStock, packingPlan, lossesForDay, lostByProduct, LOSS_REASONS, NURSERY } from './db.js';
-import { unitPriceFor } from './pricing.js';
+import { unitPriceFor, gmapAt } from './pricing.js';
 import { DENOMS, denomLabel, countTotal, floatMix, diffCounts } from './cash.js';
 import { closeDayDb, reopenDayDb, useExpectedDb } from './stockclose.js';
 import { flush, ackedSet, getConn } from './gsync.js';
@@ -29,7 +29,7 @@ export const recordLoss = day => guard('loss', async () => {
     { name: 'qty', label: 'Quantity', type: 'number', min: 1 }, { name: 'reason', label: 'Reason', type: 'select', options: LOSS_REASONS }, { name: 'note', label: 'Note' }], { qty: 1, reason: 'dead' });
   if (!v || !(v.qty > 0)) return false;
   const p = products.find(x => x.id === v.productId), qty = clampQty(v.qty, 1);
-  const loss = { id: uid(), productId: p.id, qty, reason: v.reason, note: v.note, unitPrice: unitPriceFor(p, gmap), date: day?.date || ymd(), ts: Date.now(), marketDayId: day?.id || null, locationId: day?.location || NURSERY };
+  const loss = { id: uid(), productId: p.id, qty, reason: v.reason, note: v.note, unitPrice: unitPriceFor(p, gmapAt(gmap, day?.location)), date: day?.date || ymd(), ts: Date.now(), marketDayId: day?.id || null, locationId: day?.location || NURSERY };
   await db.transaction('rw', db.losses, db.stock, async () => { await db.losses.add(loss); if (!day) await adjustStock(p.id, -qty); });
   undoToast(`${qty} x ${p.label} lost`, async () => { await db.transaction('rw', db.losses, db.stock, async () => { await db.losses.delete(loss.id); if (!day) await adjustStock(p.id, qty); }); window.dispatchEvent(new Event('hashchange')); });
   return true;

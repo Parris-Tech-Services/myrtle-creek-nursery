@@ -47,8 +47,16 @@ export function priceBasket(lines, dealsByGroup = {}) {
 }
 
 // ---- prices --------------------------------------------------------------
-// group:   {id, name, unit, deals: [{qty, price}]}       (one set of prices everywhere)
+// group:   {id, name, unit, deals: [{qty, price}], locPrices?: {locationId: {unit, deals}}}
+//          unit/deals are the standard price; locPrices replaces them at a market that charges differently
 // product: {id, group, price|null}                       (price = own price, e.g. trees; else group unit)
+/** The group as priced at one location (standard price unless that location has its own). */
+export function groupAt(g, locId) {
+  const o = locId && g?.locPrices?.[locId];
+  return o && o.unit > 0 ? { ...g, unit: o.unit, deals: o.deals || [] } : g;
+}
+/** gmap with every group priced for one location. No location (nursery, pickup, delivery) = standard prices. */
+export const gmapAt = (gmap, locId) => (locId ? Object.fromEntries(Object.entries(gmap || {}).map(([k, g]) => [k, groupAt(g, locId)])) : gmap);
 /** gmap: {groupId: group} */
 export const unitPriceFor = (p, gmap) => p.price ?? gmap?.[p.group]?.unit ?? 0;
 export const dealsFor = gmap => Object.fromEntries(Object.entries(gmap || {}).map(([g, v]) => [g, v.deals || []]));

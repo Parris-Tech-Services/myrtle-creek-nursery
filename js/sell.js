@@ -1,7 +1,7 @@
 import { db, catalog, openDay, salesForDay, soldByProduct, lossesForDay, lostByProduct, loadVisits, markets } from './db.js';
 import { reservedByProduct } from './orders.js';
 import { loadBasket, saveBasket } from './basketstore.js';
-import { priceBasket, unitPriceFor, dealsFor, makeLine } from './pricing.js';
+import { priceBasket, unitPriceFor, dealsFor, makeLine, gmapAt } from './pricing.js';
 import { productStats } from './insights.js';
 import { flush } from './gsync.js';
 import { esc, money, uid, sum, groupBy, ymd, $, $$, fmtDate, clampQty, MAX_QTY } from './util.js';
@@ -43,7 +43,8 @@ async function noDay(root) {
 export async function render(root) {
   const day = await openDay();
   if (!day) return noDay(root);
-  const { types, gmap, products: all, pmap, lmap } = await catalog({ activeOnly: true });
+  const { types, gmap: stdG, products: all, pmap, lmap } = await catalog({ activeOnly: true });
+  const gmap = gmapAt(stdG, day.location);   // this market's prices
   const dealsByGroup = dealsFor(gmap), price = p => unitPriceFor(p, gmap);
   const taken = Object.fromEntries((await db.dayStock.where('marketDayId').equals(day.id).toArray()).map(r => [r.productId, r.taken]));
   const anyLoaded = Object.keys(taken).length > 0;   // stock warnings only make sense once some stock was loaded for this day

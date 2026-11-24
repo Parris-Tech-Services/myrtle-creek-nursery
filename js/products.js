@@ -1,4 +1,4 @@
-import { db, catalog, getPeople, setPeople } from './db.js';
+import { db, catalog, getPeople, setPeople, markets } from './db.js';
 import { bestCost } from './pricing.js';
 import { esc, money, uid, toCents, dollars, $, $$ } from './util.js';
 import { askForm, undoToast, overlay, toast, confirmBox } from './ui.js';
@@ -38,7 +38,7 @@ export async function render(root) {
     <p class="muted">Tap a name to edit it. Tap a price to change it right here. Past sales keep the price they were sold at.</p>
     <div id="plist">${productRows}</div></div>
   <div class="card"><h2>Pricing groups</h2><p class="muted">Deals apply across every variety in a group.</p>
-    ${groups.map(g => `<div class="kv"><span><b>${esc(g.name)}</b><small>${money(g.unit)} each${g.deals?.length ? ', ' + g.deals.map(d => `${d.qty} for ${money(d.price)}`).join(', ') : ', no deals'}</small></span><button class="btn small" data-g="${g.id}">Edit</button></div>`).join('')}
+    ${groups.map(g => `<div class="kv"><span><b>${esc(g.name)}</b><small>${money(g.unit)} each${g.deals?.length ? ', ' + g.deals.map(d => `${d.qty} for ${money(d.price)}`).join(', ') : ', no deals'}${Object.entries(g.locPrices || {}).map(([id, o]) => `<br>${esc(locations.find(l => l.id === id)?.name || id)}: ${money(o.unit)} each${o.deals?.length ? ', ' + o.deals.map(d => `${d.qty} for ${money(d.price)}`).join(', ') : ''}`).join('')}</small></span><button class="btn small" data-g="${g.id}">Edit</button></div>`).join('')}
     <button class="btn" id="addg">Add group</button></div>
   <div class="card"><h2>Sub-categories</h2><p class="muted">Renaming changes every product in it.</p>
     ${cats.map(c => `<div class="kv"><span>${esc(c)}<small>${products.filter(p => p.category === c).length} products</small></span><button class="btn small" data-cat="${esc(c)}">Rename</button></div>`).join('')}</div>
@@ -63,37 +63,66 @@ export async function render(root) {
   };
 
   async function groupForm(g) {
-    const deals = (g?.deals || []).map(d => ({ ...d }));
+    const mk = markets(locations);
+    // scope '' = standard price; a market id = that market's own price (only present if it differs)
+    const data = { '': { unit: g?.unit || 0, deals: (g?.deals || []).map(d => ({ ...d })) } };
+    for (const [id, o] of Object.entries(g?.locPrices || {})) if (mk.some(l => l.id === id)) data[id] = { unit: o.unit, deals: (o.deals || []).map(d => ({ ...d })) };
+    let scope = '';
     return new Promise(res => {
       const o = overlay(`<form class="grp"><h3>${g ? 'Edit pricing group' : 'New pricing group'}</h3>
         <label><span>Name</span><input name="name" value="${esc(g?.name || '')}"></label>
-        <label><span>Price each</span><input name="unit" inputmode="decimal" value="${g ? dollars(g.unit) : ''}" placeholder="0.00"></label>
-        <h4>Multi-buy deals</h4><div id="deals"></div><button type="button" class="btn small" data-a="add">Add a deal</button>
-        <h4>Example</h4><div class="example" id="ex"></div>
+        ${mk.length ? '<div class="chipbar" id="scopes" role="toolbar" aria-label="Which price"></div>' : ''}
+        <div id="scopebody"></div>
         <div class="row"><button type="button" class="btn ghost" data-a="cancel">Cancel</button><button class="btn primary">Save</button></div></form>`);
       const f = o.querySelector('form');
-      const draw = () => {
-        $('#deals', f).innerHTML = deals.map((d, i) => `<div class="dealrow"><input type="number" inputmode="numeric" min="2" data-q="${i}" value="${d.qty || ''}" aria-label="Quantity"> for $
-          <input inputmode="decimal" data-d="${i}" value="${d.price ? dollars(d.price) : ''}" aria-label="Deal price"><button type="button" class="btn small ghost" data-a="rm" data-i="${i}">Remove</button></div>`).join('') || '<p class="muted">No deals.</p>';
-        example();
-      };
-      const valid = () => deals.filter(d => d.qty > 1 && d.price > 0);
+      const cur = () => data[scope];
+      const valid = d => d.deals.filter(x => x.qty > 1 && x.price > 0);
       const example = () => {
-        const unit = toCents(f.elements.unit.value), ds = valid(), max = Math.min(12, Math.max(0, ...ds.map(d => d.qty)) + 2 || 4);
+        const unit = cur().unit, ds = valid(cur()), max = Math.min(12, Math.max(0, ...ds.map(d => d.qty)) + 2 || 4);
         $('#ex', f).textContent = unit ? Array.from({ length: max }, (_, i) => i + 1).map(n => `${n} = ${money(bestCost(Array(n).fill(unit), ds))}`).join(',  ') : 'Enter a price to see examples.';
       };
-      f.oninput = e => {
-        if (e.target.dataset.q != null) deals[+e.target.dataset.q].qty = Math.round(+e.target.value) || 0;
-        if (e.target.dataset.d != null) deals[+e.target.dataset.d].price = toCents(e.target.value);
+      const draw = () => {
+        if (mk.length) $('#scopes', f).innerHTML = [['', 'Standard'], ...mk.map(l => [l.id, l.name.split(/\s+[–-]\s+|\s+Markets?$/)[0]])]
+          .map(([id, n]) => `<button type="button" class="chip ${scope === id ? 'on' : ''}" data-s="${esc(id)}">${esc(n)}${id && data[id] ? ' •' : ''}</button>`).join('');
+        const body = $('#scopebody', f);
+        if (scope && !data[scope]) {
+          body.innerHTML = `<p class="muted">${esc(locations.find(l => l.id === scope)?.name)} uses the standard price (${money(data[''].unit)} each).</p><button type="button" class="btn" data-a="own">Set a different price here</button>`;
+          return;
+        }
+        const d = cur();
+        body.innerHTML = `${scope ? `<p class="muted">Price at ${esc(locations.find(l => l.id === scope)?.name)} only.</p>` : mk.length ? '<p class="muted">Used at every market unless it has its own price (tabs above).</p>' : ''}
+          <label><span>Price each</span><input name="unit" inputmode="decimal" value="${d.unit ? dollars(d.unit) : ''}" placeholder="0.00"></label>
+          <h4>Multi-buy deals</h4><div id="deals">${d.deals.map((x, i) => `<div class="dealrow"><input type="number" inputmode="numeric" min="2" data-q="${i}" value="${x.qty || ''}" aria-label="Quantity"> for $
+          <input inputmode="decimal" data-d="${i}" value="${x.price ? dollars(x.price) : ''}" aria-label="Deal price"><button type="button" class="btn small ghost" data-a="rm" data-i="${i}">Remove</button></div>`).join('') || '<p class="muted">No deals.</p>'}</div>
+          <button type="button" class="btn small" data-a="add">Add a deal</button>
+          <h4>Example</h4><div class="example" id="ex"></div>
+          ${scope ? '<button type="button" class="btn small ghost" data-a="std">Use the standard price here</button>' : ''}`;
         example();
       };
+      f.oninput = e => {
+        if (e.target.name === 'unit') cur().unit = toCents(e.target.value);
+        if (e.target.dataset.q != null) cur().deals[+e.target.dataset.q].qty = Math.round(+e.target.value) || 0;
+        if (e.target.dataset.d != null) cur().deals[+e.target.dataset.d].price = toCents(e.target.value);
+        if (e.target.name === 'unit' || e.target.dataset.q != null || e.target.dataset.d != null) example();
+      };
       f.onclick = e => {
-        const a = e.target.dataset.a; if (!a) return;
-        if (a === 'add') { deals.push({ qty: 0, price: 0 }); draw(); }
-        if (a === 'rm') { deals.splice(+e.target.dataset.i, 1); draw(); }
+        const b = e.target.closest('button'); if (!b) return;
+        if (b.dataset.s != null) { scope = b.dataset.s; return draw(); }
+        const a = b.dataset.a; if (!a) return;
+        if (a === 'add') { cur().deals.push({ qty: 0, price: 0 }); draw(); }
+        if (a === 'rm') { cur().deals.splice(+b.dataset.i, 1); draw(); }
+        if (a === 'own') { data[scope] = { unit: data[''].unit, deals: data[''].deals.map(d => ({ ...d })) }; draw(); }
+        if (a === 'std') { delete data[scope]; draw(); }
         if (a === 'cancel') { o.remove(); res(null); }
       };
-      f.onsubmit = e => { e.preventDefault(); if (!f.elements.name.value.trim()) return toast('Enter a name'); o.remove(); res({ name: f.elements.name.value.trim(), unit: toCents(f.elements.unit.value), deals: valid() }); };
+      f.onsubmit = e => {
+        e.preventDefault();
+        if (!f.elements.name.value.trim()) return toast('Enter a name');
+        const bad = Object.keys(data).find(k => k && !(data[k].unit > 0));
+        if (bad) { scope = bad; draw(); return toast('Enter a price for ' + locations.find(l => l.id === bad)?.name + ', or use the standard price'); }
+        const locPrices = Object.fromEntries(Object.entries(data).filter(([k]) => k).map(([k, v]) => [k, { unit: v.unit, deals: valid(v) }]));
+        o.remove(); res({ name: f.elements.name.value.trim(), unit: data[''].unit, deals: valid(data['']), locPrices: Object.keys(locPrices).length ? locPrices : undefined });
+      };
       draw();
     });
   }

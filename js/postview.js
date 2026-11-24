@@ -1,6 +1,7 @@
 import { db, catalog, packingPlan, nurseryStock, getSetting, setSetting, markets } from './db.js';
 import { reservedByProduct } from './orders.js';
 import { buildPost, DEFAULTS } from './post.js';
+import { gmapAt } from './pricing.js';
 import { overlay, toast } from './ui.js';
 import { esc, ymd } from './util.js';
 
@@ -46,7 +47,7 @@ export async function showPostDialog(locId = null) {
     const options = { emoji: e.emoji.checked, limited: e.limited.checked, fresh: e.fresh.checked, pickup: e.pickup.checked, pickupText: e.pickupText.value, hold: e.hold.checked, signoff: e.signoff.value };
     await setSetting('postOpts', options);
     const out = cache.going.length
-      ? buildPost({ market: lmap[loc].name, date: e.date.value, time: e.time.value.trim(), going: cache.going, qty: cache.qty, groups: gmap, groupOrder: groups.map(g => g.id), prevIds: cache.prevIds, options })
+      ? buildPost({ market: lmap[loc].name, date: e.date.value, time: e.time.value.trim(), going: cache.going, qty: cache.qty, groups: gmapAt(gmap, loc), groupOrder: groups.map(g => g.id), prevIds: cache.prevIds, options })
       : { full: 'Nothing to post yet: no packing list quantities and no nursery stock.', short: '' };
     e.full.value = out.full; e.short.value = out.short;
   };

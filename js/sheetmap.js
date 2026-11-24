@@ -71,7 +71,7 @@ export function rowsFor(store, rec, ctx) {
     case 'stock': return one('Nursery stock', [ctx.pn(rec.productId), ctx.loc(rec.locationId), rec.qty]);
     case 'batches': return one('Growing batches', [ctx.pn(rec.productId), rec.startDate || '', rec.method === 'potted' ? 'Potted' : 'Sown', rec.qtyStarted, rec.losses || 0, rec.moved || 0, rec.expectedReady || '', rec.notes || '']);
     case 'products': return one('Products & prices', ['Product', rec.name, rec.category || '', ctx.tmap?.[rec.type]?.name || rec.type, ctx.gmap?.[rec.group]?.name || rec.group, $(rec.price), '', '', yes(rec.active)]);
-    case 'groups': return one('Products & prices', ['Pricing group', rec.name, '', '', rec.name, '', $(rec.unit), (rec.deals || []).map(d => `${d.qty} for $${(d.price / 100).toFixed(2)}`).join(', '), '']);
+    case 'groups': return one('Products & prices', ['Pricing group', rec.name, '', '', rec.name, '', $(rec.unit), [(rec.deals || []).map(d => `${d.qty} for $${(d.price / 100).toFixed(2)}`).join(', '), ...Object.entries(rec.locPrices || {}).map(([id, o]) => `${ctx.loc?.(id) || id}: $${(o.unit / 100).toFixed(2)} each` + (o.deals || []).map(d => `, ${d.qty} for $${(d.price / 100).toFixed(2)}`).join(''))].filter(Boolean).join('; '), '']);
     case 'settings':
       if (rec.key !== 'staffNames') return { rows: [] };
       return { replaceTabs: ['People'], rows: (rec.value || []).map(p => ({ tab: 'People', id: 'people:' + p.name, cells: [p.name, yes(!p.hidden)] })) };

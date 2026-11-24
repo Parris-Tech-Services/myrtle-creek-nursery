@@ -1,6 +1,6 @@
 import { db, catalog, openDay, markets } from './db.js';
 import { takePaymentDb, collectDb, uncollectDb } from './orderflow.js';
-import { dealsFor, unitPriceFor } from './pricing.js';
+import { dealsFor, unitPriceFor, gmapAt } from './pricing.js';
 import { orderTotals, paidTotal, balance, paymentStatus, filterOrders, liability } from './orders.js';
 import { flush } from './gsync.js';
 import { esc, money, uid, ymd, fmtDate, groupBy, $, $$ } from './util.js';
@@ -36,7 +36,7 @@ const uncollect = id => guard('uncollect:' + id, async () => { await uncollectDb
 
 /** Full-screen item picker with live deal pricing. Resolves lines or null. */
 function editItems(order, cat) {
-  const { products, types, pmap, gmap } = cat, deals = dealsFor(gmap), existing = Object.fromEntries((order.lines || []).map(l => [l.productId, l]));
+  const { products, types, pmap } = cat, gmap = gmapAt(cat.gmap, order.fulfilment === 'market' ? order.locationId : null), deals = dealsFor(gmap), existing = Object.fromEntries((order.lines || []).map(l => [l.productId, l]));
   const g = groupBy(products.filter(p => p.active || existing[p.id]), p => p.type);
   return new Promise(res => {
     const o = overlay(`<form class="items"><h3>Items for ${esc(order.customer)}</h3><div class="scroll-y">
@@ -71,7 +71,7 @@ async function orderForm(existing) {
   const o = { ...base, ...v, deliveryFee: v.fulfilment === 'delivery' ? v.deliveryFee : 0 };
   const lines = await editItems(o, await catalog());
   if (!lines) return;
-  const t = orderTotals(lines, dealsFor(cat.gmap), id => cat.pmap[id]?.group, o.deliveryFee);
+  const t = orderTotals(lines, dealsFor(gmapAt(cat.gmap, o.fulfilment === 'market' ? o.locationId : null)), id => cat.pmap[id]?.group, o.deliveryFee);
   Object.assign(o, { lines, items: t.items, dealSavings: t.dealSavings, savingsByGroup: t.savingsByGroup, total: t.total });
   await saveOrder(o);
   toast('Order saved');
