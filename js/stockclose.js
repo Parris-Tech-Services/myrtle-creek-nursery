@@ -59,10 +59,114 @@ export async function useExpectedDb(dayId) {
     for (const r of Object.values(rows)) {
       if (r.returned != null) continue;
       const back = Math.max(0, r.taken - (sold[r.productId] || 0) - (lost[r.productId] || 0));
-      await db.dayStock.put({ ...r, returned: back });
+      await db.dayStock.put({ ...r, returned: back, returnedVerified: true, returnedAssumed: true });
       await adjustStock(r.productId, back);
       n++;
     }
     return n;
   });
+}
+
+/** Prefill missing coming-home counts without changing nursery stock. These values are assumptions
+ * until the user verifies or edits each count. */
+export async function assumeReturnedDb(dayId) {
+  return db.transaction('rw', [db.dayStock, db.sales, db.losses], async () => {
+    const sold = soldByProduct(await salesForDay(dayId)), lost = lostByProduct(await lossesForDay(dayId));
+    const rows = Object.fromEntries((await db.dayStock.where('marketDayId').equals(dayId).toArray()).map(r => [r.productId, r]));
+    for (const id of [...Object.keys(sold), ...Object.keys(lost)]) rows[id] ||= { id: dayId + '|' + id, marketDayId: dayId, productId: id, taken: 0, returned: null };
+    let n = 0;
+    for (const r of Object.values(rows)) {
+      if (r.returned != null) continue;
+      const back = Math.max(0, r.taken - (sold[r.productId] || 0) - (lost[r.productId] || 0));
+      await db.dayStock.put({ ...r, returned: back, returnedVerified: false, returnedAssumed: true });
+      n++;
+    }
+    return n;
+  });
+}
+
+/** Delete a market day and every record attributable to it. Returns a snapshot so the UI can offer Undo.
+ * Stock is reversed without relying on the current record totals: loaded units come back, returns are
+ * removed, and any close-time oversold deduction is restored.
+ */
+export async function deleteMarketDayDb(dayId) {
+  return db.transaction('rw',
+    [db.marketDays, db.sales, db.orders, db.losses, db.cashMovements, db.soldOut, db.dayStock, db.stock, db.settings],
+    async () => {
+      const day = await db.marketDays.get(dayId);
+      if (!day) return null;
+      const snapshot = {
+        day,
+        sales: await db.sales.where('marketDayId').equals(dayId).toArray(),
+        losses: await db.losses.where('marketDayId').equals(dayId).toArray(),
+        movements: await db.cashMovements.where('marketDayId').equals(dayId).toArray(),
+        soldOut: await db.soldOut.where('marketDayId').equals(dayId).toArray(),
+        dayStock: await db.dayStock.where('marketDayId').equals(dayId).toArray(),
+        orders: [],
+        basket: await db.settings.get('basket')
+      };
+
+      const stockRows = snapshot.dayStock;
+      for (const r of stockRows) {
+        const returned = r.returned || 0;
+        if (r.taken - returned !== 0) await adjustStock(r.productId, r.taken - returned);
+      }
+      for (const [id, n] of Object.entries(day.oversoldDeducted || {})) await adjustStock(id, n);
+
+      for (const sale of snapshot.sales) {
+        if (!sale.fromOrder) continue;
+        const order = await db.orders.get(sale.fromOrder);
+        if (!order || order.collectedDayId !== dayId) continue;
+        snapshot.orders.push({ ...order });
+        await db.orders.put({
+          ...order,
+          status: 'held',
+          collectedAt: null,
+          collectedDate: null,
+          collectedDayId: null,
+          collectedSaleId: null,
+          stockFrom: null
+        });
+        if (order.stockFrom === 'nursery') {
+          for (const line of order.lines || []) await adjustStock(line.productId, line.qty);
+        }
+      }
+
+      await db.sales.where('marketDayId').equals(dayId).delete();
+      await db.losses.where('marketDayId').equals(dayId).delete();
+      await db.cashMovements.where('marketDayId').equals(dayId).delete();
+      await db.soldOut.where('marketDayId').equals(dayId).delete();
+      await db.dayStock.where('marketDayId').equals(dayId).delete();
+      await db.marketDays.delete(dayId);
+      if (snapshot.basket?.value?.dayId === dayId) await db.settings.delete('basket');
+      return snapshot;
+    });
+}
+
+export async function restoreMarketDayDb(snapshot) {
+  if (!snapshot?.day) return false;
+  return db.transaction('rw',
+    [db.marketDays, db.sales, db.orders, db.losses, db.cashMovements, db.soldOut, db.dayStock, db.stock, db.settings],
+    async () => {
+      await db.marketDays.put(snapshot.day);
+      await db.sales.bulkPut(snapshot.sales);
+      await db.losses.bulkPut(snapshot.losses);
+      await db.cashMovements.bulkPut(snapshot.movements);
+      await db.soldOut.bulkPut(snapshot.soldOut);
+      await db.dayStock.bulkPut(snapshot.dayStock);
+      await db.orders.bulkPut(snapshot.orders);
+      if (snapshot.basket) await db.settings.put(snapshot.basket);
+
+      for (const r of snapshot.dayStock) {
+        const returned = r.returned || 0;
+        if (r.taken - returned !== 0) await adjustStock(r.productId, -(r.taken - returned));
+      }
+      for (const [id, n] of Object.entries(snapshot.day.oversoldDeducted || {})) await adjustStock(id, -n);
+      for (const order of snapshot.orders) {
+        if (order.stockFrom === 'nursery') {
+          for (const line of order.lines || []) await adjustStock(line.productId, -line.qty);
+        }
+      }
+      return true;
+    });
 }

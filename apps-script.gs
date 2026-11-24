@@ -13,11 +13,11 @@
  *           GET  ?key=..&action=ping|counts|export&store=..&offset=..&limit=..
  *           GET  (no parameters) -> friendly page with the connection code (until the app has connected once)
  */
-const SCRIPT_VERSION = 1;   // the app checks this. Raise it whenever the script changes in a way the app depends on.
+const SCRIPT_VERSION = 2;   // the app checks this. Raise it whenever the script changes in a way the app depends on.
 const STORES = ['sales', 'marketDays', 'cashMovements', 'orders', 'losses', 'soldOut', 'stock', 'dayStock', 'batches', 'products', 'types', 'groups', 'locations', 'packing', 'settings'];
 const DATA_TAB = '_data';
 const START_TAB = 'Start here';
-const TAB_ORDER = ['Start here', 'Sales', 'Market days', 'Cash counts', 'Expenses & cash out', 'Orders', 'Losses', 'Stock taken & returned', 'Sold out', 'Nursery stock', 'Growing batches', 'Products & prices', 'People'];
+const TAB_ORDER = ['Start here', 'Sales', 'Sale lines', 'Market days', 'Cash counts', 'Expenses & cash out', 'Orders', 'Losses', 'Stock taken & returned', 'Sold out', 'Nursery stock', 'Growing batches', 'Products & prices', 'People'];
 const NUMFMT = { date: 'ddd d mmm yyyy', time: 'h:mm am/pm', money: '$#,##0.00', num: '0', dec: '0.0#' };
 
 function getKey_() {

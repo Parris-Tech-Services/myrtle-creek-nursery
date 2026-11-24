@@ -1,5 +1,5 @@
 import { db, catalog, paymentTotals, owed, dayCash, LOSS_REASONS } from './db.js';
-import { salesCsv, ordersCsv, deliverFile } from './sync.js';
+import { saleLinesCsv, ordersCsv, cashCsv, daysCsv, deliverFile } from './sync.js';
 import { liability } from './orders.js';
 import { totalPersonHours, netPerHour } from './staff.js';
 import { esc, money, sum, ymd, fmtDate, lineNets, $ } from './util.js';
@@ -51,7 +51,8 @@ export async function render(root) {
     <div class="kv"><span>Prepaid orders not yet collected</span><b>${money(liability(orders))}</b></div>
     <div class="kv"><span>Expenses (all days) / net</span><b>${money(sum(byDay, r => r.expenses))} / ${money(sum(byDay, r => r.net))}</b></div>
     <div class="kv"><span>Losses (value)</span><b>${money(sum(losses, l => l.qty * l.unitPrice))}</b></div>
-    <div class="row"><button class="btn primary" id="csv">Export sales lines (CSV)</button><button class="btn" id="ocsv">Export orders (CSV)</button></div></div>
+    <div class="row"><button class="btn primary" id="csv">Export sale lines (CSV)</button><button class="btn" id="ocsv">Export orders (CSV)</button><button class="btn" id="ccsv">Export cash counts (CSV)</button></div>
+    <div class="row"><button class="btn" id="dcsv">Export market days (CSV)</button></div></div>
   <div id="best"></div>
   <div class="card"><h3>By market day</h3><p class="muted">Sales value counts orders on the day they were collected. Cash, card and Transfer / PayID are money received that day (including order payments). Net = sales - expenses (stall fee, fuel, supplies, other).</p>${tbl(['Date', 'Location', 'Weather', 'Crowd', 'Sales', 'Units', 'Sales $', 'Expenses', 'Net', 'Cash', 'Card', 'Transfer / PayID', ''],
     byDay.map(r => [fmtDate(r.d.date), esc(lmap[r.d.location]?.name), esc(r.d.weather || ''), r.d.crowd || '', r.n, r.u, money(r.t), money(r.expenses), money(r.net), money(r.cash), money(r.card), money(r.transfer),
@@ -76,6 +77,8 @@ export async function render(root) {
       return;
     }
     if (b.id === 'ocsv') return void await deliverFile(new Blob([await ordersCsv()], { type: 'text/csv' }), `myrtle-creek-orders-${ymd()}.csv`);
-    if (b.id === 'csv') { await deliverFile(new Blob([await salesCsv(from, to)], { type: 'text/csv' }), `myrtle-creek-sales-${ymd()}.csv`); }
+    if (b.id === 'ccsv') return deliverFile(new Blob([await cashCsv()], { type: 'text/csv' }), `myrtle-creek-cash-${ymd()}.csv`);
+    if (b.id === 'dcsv') return deliverFile(new Blob([await daysCsv()], { type: 'text/csv' }), `myrtle-creek-market-days-${ymd()}.csv`);
+    if (b.id === 'csv') { await deliverFile(new Blob([await saleLinesCsv(from, to)], { type: 'text/csv' }), `myrtle-creek-sale-lines-${ymd()}.csv`); }
   };
 }

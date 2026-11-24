@@ -1,7 +1,7 @@
 import { db, getPeople, setPeople, catalog, openDay, salesForDay, soldByProduct, dayReceipts, dayCash, owed, adjustStock, nurseryStock, packingPlan, lossesForDay, lostByProduct, LOSS_REASONS, NURSERY } from './db.js';
 import { unitPriceFor, gmapAt } from './pricing.js';
 import { DENOMS, denomLabel, countTotal, floatMix, diffCounts } from './cash.js';
-import { closeDayDb, reopenDayDb, useExpectedDb } from './stockclose.js';
+import { closeDayDb, reopenDayDb, useExpectedDb, assumeReturnedDb, deleteMarketDayDb, restoreMarketDayDb } from './stockclose.js';
 import { flush, ackedSet, getConn } from './gsync.js';
 import { esc, money, uid, sum, ymd, fmtDate, $, $$, groupBy, parseMoney, clampQty } from './util.js';
 import { showPostDialog } from './postview.js';
@@ -21,6 +21,24 @@ const saveDay = async (day, patch) => {
   flush();
 };
 
+async function deleteMarketDay(day, root) {
+  const v = await askForm(`Delete ${fmtDate(day.date)} at ${await marketName(day.location)}?`,
+    [{ name: 'word', label: 'This removes the day, sales, stock counts, losses and cash entries. Type DELETE to continue.' }],
+    {}, { submit: 'Delete market day' });
+  if (v?.word !== 'DELETE') return false;
+  const snapshot = await deleteMarketDayDb(day.id);
+  if (!snapshot) return false;
+  flush();
+  undoToast('Market day deleted', async () => { await restoreMarketDayDb(snapshot); flush(); render(root); });
+  render(root);
+  return true;
+}
+
+async function marketName(locationId) {
+  const { lmap } = await catalog();
+  return lmap[locationId]?.name || locationId;
+}
+
 /** Record plant losses at a market day (day given) or at the nursery (day null: also reduces nursery stock). */
 export const recordLoss = day => guard('loss', async () => {
   const { products, gmap } = await catalog({ activeOnly: true });
@@ -29,9 +47,11 @@ export const recordLoss = day => guard('loss', async () => {
     { name: 'qty', label: 'Quantity', type: 'number', min: 1 }, { name: 'reason', label: 'Reason', type: 'select', options: LOSS_REASONS }, { name: 'note', label: 'Note' }], { qty: 1, reason: 'dead' });
   if (!v || !(v.qty > 0)) return false;
   const p = products.find(x => x.id === v.productId), qty = clampQty(v.qty, 1);
+  if (qty >= 5 && !await confirmBox(`Confirm loss: ${qty} x ${p.label} (${money(qty * unitPriceFor(p, gmapAt(gmap, day?.location)))}).`, 'Confirm loss', true)) return false;
   const loss = { id: uid(), productId: p.id, qty, reason: v.reason, note: v.note, unitPrice: unitPriceFor(p, gmapAt(gmap, day?.location)), date: day?.date || ymd(), ts: Date.now(), marketDayId: day?.id || null, locationId: day?.location || NURSERY };
   await db.transaction('rw', db.losses, db.stock, async () => { await db.losses.add(loss); if (!day) await adjustStock(p.id, -qty); });
-  undoToast(`${qty} x ${p.label} lost`, async () => { await db.transaction('rw', db.losses, db.stock, async () => { await db.losses.delete(loss.id); if (!day) await adjustStock(p.id, qty); }); window.dispatchEvent(new Event('hashchange')); });
+  const losses = await lossesForDay(day?.id);
+  undoToast(`${qty} x ${p.label} lost · today: ${losses.reduce((n, l) => n + l.qty, 0)} units`, async () => { await db.transaction('rw', db.losses, db.stock, async () => { await db.losses.delete(loss.id); if (!day) await adjustStock(p.id, qty); }); window.dispatchEvent(new Event('hashchange')); });
   return true;
 });
 
@@ -132,7 +152,8 @@ async function mainStart(root) {
     ${await owedCard()}
     <div class="card"><h3>Recent days</h3>${days.map(d => `<div class="kv"><span>${fmtDate(d.date)} &middot; ${esc(lmap[d.location]?.name)} <small>${d.status}</small></span>
       <span>${money(totals[d.id])} <button class="btn small" data-r="${d.id}">Report</button>
-      ${d.status === 'closed' && !d.auto ? `<button class="btn small ghost" data-reopen="${d.id}">Reopen</button>` : ''}</span></div>`).join('') || '<p class="muted">No days yet.</p>'}</div>`;
+      ${d.status === 'closed' && !d.auto ? `<button class="btn small ghost" data-reopen="${d.id}">Reopen</button>` : ''}
+      ${d.auto ? '' : `<button class="btn small ghost" data-delete-day="${d.id}">Delete</button>`}</span></div>`).join('') || '<p class="muted">No days yet.</p>'}</div>`;
   wireChecklist(root, () => render(root));
   $('#post', root).onclick = () => showPostDialog();
   $('#start', root).onclick = async () => {
@@ -150,6 +171,11 @@ async function mainStart(root) {
   root.onclick = async e => {
     const b = e.target.closest('button'); if (!b) return;
     if (b.dataset.r) go(root, 'end', b.dataset.r);
+    if (b.dataset.deleteDay) {
+      const day = await db.marketDays.get(b.dataset.deleteDay);
+      if (day) await deleteMarketDay(day, root);
+      return;
+    }
     if (b.dataset.reopen) {
       if (await openDay()) return toast('Close the open day first');
       await reopenDayDb(b.dataset.reopen); flush(); render(root);
@@ -172,7 +198,7 @@ async function mainOpen(root, day) {
     ${day.floatPending ? '<div class="banner">The opening float has not been counted. <button class="btn small" id="refloat">Count float</button></div>' : ''}
     <div class="row"><a class="btn primary big" href="#sell">Sell</a><button class="btn big" id="load">Load stock</button></div>
     <div class="row"><button class="btn" id="loss">Record loss</button><button class="btn" id="out">Cash out / expense</button><button class="btn" id="float">Add float (count)</button><button class="btn" id="refloat">Recount opening float</button></div>
-    <button class="btn big" id="end">End day: check the takings</button></div>
+    <button class="btn big" id="end">End day: check the takings</button><button class="btn ghost" id="delete-day">Delete market day</button></div>
     ${await notesCard(day)}
     <div class="card"><h3>Cash movements and expenses today</h3>${movements.map(m => `<div class="kv"><span>${LABEL[m.type]}${m.category ? ' (' + (CATNAME[m.category] || m.category) + ')' : ''} ${esc(m.note)}</span>
       <span>${money(m.amount)} <button class="btn small ghost" data-del="${m.id}">Delete</button></span></div>`).join('') || '<p class="muted">None.</p>'}</div>
@@ -186,6 +212,7 @@ async function mainOpen(root, day) {
     const b = e.target.closest('button'); if (!b) return;
     if (b.id === 'load') return go(root, 'load');
     if (b.id === 'end') { endStep = 1; return go(root, 'end', day.id); }
+    if (b.id === 'delete-day') { await deleteMarketDay(day, root); return; }
     if (b.dataset.del) { if (await confirmBox('Delete this entry?', 'Delete', true)) { await db.cashMovements.delete(b.dataset.del); render(root); } return; }
     if (b.id === 'loss') { await recordLoss(day); return; }
     if (b.id === 'out') { await expenseForm(day); return render(root); }
@@ -209,25 +236,32 @@ async function loadView(root, day) {
   const stock = await nurseryStock();
   const have = Object.fromEntries((await db.dayStock.where('marketDayId').equals(day.id).toArray()).map(r => [r.productId, r]));
   const g = groupBy(products, p => p.type);
-  root.innerHTML = `<div class="card"><h2>Load stock</h2><p>${esc(lmap[day.location]?.name)}. How many of each are you taking? Prefilled from the packing list. Saving takes them off nursery stock.</p>
+  root.innerHTML = `<div class="card"><h2>Load stock</h2><p>${esc(lmap[day.location]?.name)}. How many of each are you taking? Prefilled from the packing list. Check each row after counting it; saving takes them off nursery stock.</p>
+    <div class="row"><button class="btn" id="verifyloaded">Verify all quantities</button></div>
     ${types.filter(t => g[t.id]).map(t => `<h3>${esc(t.name)}s</h3>${g[t.id].map(p => `<div class="kv"><span>${esc(p.label)} <small>nursery ${stock[p.id] || 0}</small></span>
-      ${stepperHtml(`data-p="${p.id}"`, have[p.id]?.taken ?? plan[p.id]?.qty ?? 0, p.label)}</div>`).join('')}`).join('')}
+      ${stepperHtml(`data-p="${p.id}"`, have[p.id]?.taken ?? plan[p.id]?.qty ?? 0, p.label)}<label class="chk"><input type="checkbox" data-loadverify="${p.id}" ${have[p.id]?.loadedVerified ? 'checked' : ''}> Verified</label></div>`).join('')}`).join('')}
     <div class="row"><button class="btn" id="takeall">Take all nursery stock</button></div>
     <div class="row"><button class="btn ghost" id="back">Back</button><button class="btn primary big" id="save">Save loaded stock</button></div></div>`;
   root.onclick = e => {
     if (stepperClick(e)) return;
     if (e.target.id === 'takeall') $$('input[data-p]', root).forEach(i => { i.value = clampQty(stock[i.dataset.p] || 0); });
+    if (e.target.id === 'verifyloaded') $$('input[data-loadverify]', root).forEach(i => { i.checked = true; });
   };
   $('#back', root).onclick = () => go(root, 'main');
   $('#save', root).onclick = () => guard('load', async () => {
+    const unchecked = $$('input[data-loadverify]', root).filter(i => !i.checked);
+    if (unchecked.length) return toast(`Verify ${unchecked.length} loaded quantity${unchecked.length === 1 ? '' : 'ies'} first`);
     const changes = [];
     await db.transaction('rw', db.dayStock, db.stock, async () => {
       for (const i of $$('input[data-p]', root)) {
         const p = i.dataset.p, n = clampQty(i.value), old = have[p]?.taken || 0;
-        if (n === old && (have[p] || n === 0)) continue;
+        if (n === old && (have[p] || n === 0)) {
+          if (have[p]) await db.dayStock.put({ ...have[p], loadedVerified: true });
+          continue;
+        }
         changes.push({ p, n, old, ret: have[p]?.returned ?? null, had: !!have[p] });
         await adjustStock(p, old - n);
-        await db.dayStock.put({ id: day.id + '|' + p, marketDayId: day.id, productId: p, taken: n, returned: have[p]?.returned ?? null });
+        await db.dayStock.put({ id: day.id + '|' + p, marketDayId: day.id, productId: p, taken: n, returned: have[p]?.returned ?? null, loadedVerified: true });
       }
     });
     go(root, 'main');
@@ -264,25 +298,29 @@ async function endView(root, day) {
   const sales = await salesForDay(day.id), sold = soldByProduct(sales), pay = await dayReceipts(day.id, sales);
   const { expected, expenses } = await dayCash(day, sales);
   const lost = lostByProduct(await lossesForDay(day.id));
+  const closed = day.status === 'closed';
+  if (!closed) await assumeReturnedDb(day.id);
   const ds = Object.fromEntries((await db.dayStock.where('marketDayId').equals(day.id).toArray()).map(r => [r.productId, r]));
   const rows = products.filter(p => ds[p.id]?.taken > 0 || sold[p.id] > 0 || lost[p.id] > 0);
   const rowsCash = diffCounts(day.floatCounts, day.closeCounts);
-  const closed = day.status === 'closed', salesTotal = sum(sales, s => s.total), step = closed ? 0 : endStep;
+  const salesTotal = sum(sales, s => s.total), step = closed ? 0 : endStep;
   const mix = day.keepFloat != null && !closed ? (await db.settings.get('nextFloat'))?.value?.counts ?? floatMix(day.keepFloat, day.closeCounts) : null;
   const show = n => closed || step === n;
 
   /** Status of one product row. Oversold (sold + lost more than loaded) is flagged even before a returned count is typed. */
   const status = (p, v) => {
     const taken = ds[p]?.taken || 0, over = (sold[p] || 0) + (lost[p] || 0) - taken;
-    if (v === '' || v == null) return over > 0 ? { text: `oversold by ${over} (sold more than loaded)`, cls: 'bad', bad: 1, missing: 1 } : { text: '', cls: '', missing: 1 };
+    if (v === '' || v == null) return over > 0 ? { text: `oversold by ${over} (sold more than loaded)`, cls: 'bad', bad: 1, missing: 1 } : { text: 'Missing - enter a count', cls: 'bad', bad: 0, missing: 1 };
+    if (!closed && !ds[p]?.returnedVerified) return { text: ds[p]?.returnedAssumed ? 'Assumed - verify this count' : 'Unverified - verify this count', cls: 'bad', bad: 0, missing: 1 };
     const d = taken - +v - (sold[p] || 0) - (lost[p] || 0);
     return { text: d === 0 ? 'OK' : d > 0 ? `${d} unaccounted` : over > 0 ? `oversold by ${over} (sold more than loaded)` : `${-d} more gone than recorded`, cls: d ? 'bad' : 'ok', bad: d ? 1 : 0 };
   };
   const tally = () => rows.reduce((t, p) => { const s = status(p.id, ds[p.id]?.returned); return { bad: t.bad + (s.bad || 0), missing: t.missing + (s.missing || 0) }; }, { bad: 0, missing: 0 });
   const t0 = tally();
 
-  const s1 = `<h3>${closed ? 'Stock' : 'Step 1. Count what is coming home'}</h3><p class="muted">Enter how many of each are coming back. Taken minus returned should equal sold plus lost.</p>
-    <table class="t" id="rec"><tr><th>Product</th><th>Taken</th><th>Sold</th><th>Lost</th><th>Coming home</th><th></th></tr>
+  const s1 = `<h3>${closed ? 'Stock' : 'Step 1. Count what is coming home'}</h3><p class="muted">Counts are pre-filled from taken minus sold and lost. Verify or edit each count after checking the plants.</p>
+    ${!closed ? '<div class="row"><button class="btn" id="verifyreturns">Verify all assumed counts</button></div>' : ''}
+    <table class="t" id="rec"><tr><th>Product</th><th>Taken</th><th>Sold</th><th>Lost</th><th>Coming home</th><th>Status</th></tr>
     ${rows.map(p => { const s = status(p.id, ds[p.id]?.returned); return `<tr data-p="${p.id}"><td>${esc(p.label)}</td><td>${ds[p.id]?.taken || 0}</td><td>${sold[p.id] || 0}</td><td>${lost[p.id] || 0}</td>
       <td>${stepperHtml(`data-ret="${p.id}"`, ds[p.id]?.returned ?? '', p.label)}</td><td class="flag ${s.cls}">${esc(s.text)}</td></tr>`; }).join('') || '<tr><td colspan=6>No stock loaded or sold.</td></tr>'}</table>
     ${!closed && t0.missing ? `<div class="banner">${t0.missing} product(s) have no coming-home count. <button class="btn small" id="useexp">Everything sold: use expected</button></div>` : ''}
@@ -308,7 +346,7 @@ async function endView(root, day) {
     ${sum(sales, x => x.rounding || 0) ? `<div class="kv"><span>Cash rounding to 5c (already in the cash total)</span><b>${money(sum(sales, x => x.rounding || 0))}</b></div>` : ''}
     <div class="kv"><span>Expenses (stall fee, fuel, supplies, other)</span><b>${money(expenses)}</b></div>
     <div class="kv"><span>Net (sales - expenses)</span><b>${money(salesTotal - expenses)}</b></div>`;
-  const nav = closed ? `<div class="row"><button class="btn ghost" id="back">Back</button><button class="btn" id="reopen">Reopen day</button></div>`
+  const nav = closed ? `<div class="row"><button class="btn ghost" id="back">Back</button><button class="btn" id="reopen">Reopen day</button><button class="btn ghost" id="delete-day">Delete day</button></div>`
     : `<div class="row"><button class="btn ghost" id="prev">Back</button>${step < 4 ? `<button class="btn primary big" id="next">Next: ${STEPS[step]}</button>` : `<button class="btn primary big" id="close" ${t0.missing ? 'disabled' : ''}>Close day</button>`}</div>`;
   root.innerHTML = `<div class="card"><h2>${closed ? 'Report' : 'End of day'}: ${esc(lmap[day.location]?.name)}</h2><p>${fmtDate(day.date)} &middot; ${closed ? 'closed' : 'open'}
     ${day.weather ? ' &middot; ' + esc(day.weather) : ''}${day.crowd ? ' &middot; crowd ' + day.crowd + '/5' : ''}</p>
@@ -321,14 +359,19 @@ async function endView(root, day) {
     if (await notesChange(e, day, root)) return;
     const i = e.target;
     if (i.dataset.ret) {
-      const p = i.dataset.ret, old = ds[p]?.returned ?? null, n = i.value === '' ? null : clampQty(i.value);
-      const apply = v => guard('ret:' + p, () => db.transaction('rw', db.dayStock, db.stock, async () => {
-        await adjustStock(p, (v ?? 0) - (ds[p]?.returned ?? 0));
-        await db.dayStock.put({ id: day.id + '|' + p, marketDayId: day.id, productId: p, taken: ds[p]?.taken || 0, returned: v });
-        ds[p] = { ...(ds[p] || { taken: 0 }), returned: v };
+      const p = i.dataset.ret, old = ds[p]?.returned ?? null, oldVerified = ds[p]?.returnedVerified === true, n = i.value === '' ? null : clampQty(i.value);
+      const apply = (v, verified = true) => guard('ret:' + p, () => db.transaction('rw', db.dayStock, db.stock, async () => {
+        const actual = ds[p]?.returnedVerified ? ds[p]?.returned || 0 : 0;
+        await adjustStock(p, (verified ? v ?? 0 : 0) - actual);
+        await db.dayStock.put({ id: day.id + '|' + p, marketDayId: day.id, productId: p, taken: ds[p]?.taken || 0, returned: v, returnedVerified: verified, returnedAssumed: false });
+        ds[p] = { ...(ds[p] || { taken: 0 }), returned: v, returnedVerified: verified, returnedAssumed: false };
       }));
       await apply(n);
-      undoToast('Saved', async () => { await apply(old); const inp = $(`input[data-ret="${p}"]`, root); if (inp) inp.value = old ?? ''; refresh(); });
+      undoToast('Coming-home count saved and verified', async () => {
+        await apply(old, oldVerified);
+        const inp = $(`input[data-ret="${p}"]`, root); if (inp) inp.value = old ?? '';
+        refresh();
+      });
     }
     if (i.id === 'counted') {
       const c = i.value.trim() === '' ? null : parseMoney(i.value);
@@ -369,11 +412,23 @@ async function endView(root, day) {
       if (keep != null) await db.settings.put({ key: 'nextFloat', value: { amount: keep, counts: floatMix(keep, c) } });
       return render(root);
     }
+    if (b.id === 'verifyreturns') {
+      await db.transaction('rw', db.dayStock, db.stock, async () => {
+        for (const r of Object.values(ds)) {
+          if (r.returned != null && !r.returnedVerified) {
+            await adjustStock(r.productId, r.returned);
+            await db.dayStock.put({ ...r, returnedVerified: true, returnedAssumed: true });
+          }
+        }
+      });
+      return render(root);
+    }
     if (b.id === 'useexp') { await useExpectedDb(day.id); return render(root); }
     if (b.id === 'reopen') {
       if (await openDay()) return toast('Close the open day first');
       await reopenDayDb(day.id); flush(); endStep = 1; return go(root, 'main');
     }
+    if (b.id === 'delete-day') { await deleteMarketDay(day, root); return; }
     if (b.id === 'close') return guard('close:' + day.id, async () => {   // no "are you sure": closing is undoable
       await closeDayDb(day.id); flush();
       endStep = 1; go(root, 'main');
