@@ -4,6 +4,7 @@ import { TABS, TABS_OF_STORE, rowsFor, tabDefs, hhmm } from '../js/sheetmap.js';
 
 const day = { id: 'd1', date: '2026-12-01', location: 'jamison', status: 'closed', float: 5000, countedCash: 12000, setupTime: '06:30', packupTime: '14:00', staff: [{ name: 'Luca Dorrough' }], crowd: 4, weather: 'sunny' };
 const ctx = { days: { d1: day }, loc: id => ({ jamison: 'Jamison Markets' })[id] || id || '', pn: (id, l) => ({ roma: 'Tomato - Roma' })[id] || l?.name || id,
+  pmap: { roma: { type: 'tube', category: 'Tomato' } },
   gmap: { seedling: { name: 'Seedling' } }, tmap: { tube: { name: 'Tube' } }, cash: { expected: 11900 } };
 const TYPES = new Set(['text', 'date', 'time', 'money', 'num', 'dec']);
 
@@ -52,6 +53,14 @@ test('sales row: friendly values, money in dollars, voided as Yes or blank', () 
   assert.deepEqual(row.cells.slice(0, 8), ['2026-12-01', '09:05', 'Jamison Markets', '4 x Tomato - Roma; 1 x Pot (other)', 5, 18, 1, 'Cash']);
   assert.deepEqual(row.cells.slice(8), [20, 2, 0, '']);
   assert.equal(rowsFor('sales', { ...SAMPLES.sales, voided: true }, ctx).rows[0].cells[11], 'Yes');
+});
+
+test('sales also writes one normalized row per sale line', () => {
+  const result = rowsFor('sales', SAMPLES.sales, ctx);
+  assert.deepEqual(result.rows.map(r => r.tab), ['Sales', 'Sale lines', 'Sale lines']);
+  assert.deepEqual(result.rows[1].cells.slice(4, 11), ['Tomato - Roma', 'Tube', 'Tomato', 4, 4, 'normal', 16]);
+  assert.equal(result.rows[2].cells[4], 'Pot');
+  assert.equal(result.rows[2].cells[9], 'other');
 });
 
 test('market day also feeds Cash counts (expected vs counted, denominations)', () => {

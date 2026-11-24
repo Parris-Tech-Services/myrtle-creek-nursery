@@ -27,6 +27,8 @@
 /* Bagel Fat One is used only for: the app title, each screen's main heading, the basket total and the over/short figure. */
 [hidden]{display:none!important}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+.skip-link{position:absolute;left:12px;top:-80px;z-index:200;background:var(--card);color:var(--ink);border:2px solid var(--focus);border-radius:6px;padding:10px 14px;font-weight:700}
+.skip-link:focus{top:12px}
 html{font-size:106.25%;-webkit-text-size-adjust:100%}
 @supports (font:-apple-system-body){html{font:-apple-system-body;font-family:var(--body)}}
 html,body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--body);line-height:1.45}

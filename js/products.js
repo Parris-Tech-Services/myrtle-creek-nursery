@@ -41,7 +41,7 @@ export async function render(root) {
     ${groups.map(g => `<div class="kv"><span><b>${esc(g.name)}</b><small>${money(g.unit)} each${g.deals?.length ? ', ' + g.deals.map(d => `${d.qty} for ${money(d.price)}`).join(', ') : ', no deals'}</small></span><button class="btn small" data-g="${g.id}">Edit</button></div>`).join('')}
     <button class="btn" id="addg">Add group</button></div>
   <div class="card"><h2>Sub-categories</h2><p class="muted">Renaming changes every product in it.</p>
-    ${cats.map(c => `<div class="kv"><span>${esc(c)}<small>${products.filter(p => p.category === c).length} products</small></span><button class="btn small" data-cat="${esc(c)}">Rename</button></div>`).join('')}</div>
+    ${cats.map(c => `<div class="kv"><span>${esc(c)}<small>${products.filter(p => p.category === c).length} products</small></span><button class="btn small" data-cat="${esc(c)}">Rename</button><button class="btn small ghost" data-cat-delete="${esc(c)}">Delete</button></div>`).join('')}</div>
   <div class="card"><h2>Types</h2>${types.map(t => `<div class="kv ${t.hidden ? 'off' : ''}"><span>${esc(t.name)}${t.hidden ? '<small>hidden</small>' : ''}</span><button class="btn small" data-t="${t.id}">Edit</button></div>`).join('')}<button class="btn" id="addt">Add type</button></div>
   <div class="card"><h2>People</h2><p class="muted">Used by "Who was there" on a market day.</p>${people.map((x, i) => `<div class="kv ${x.hidden ? 'off' : ''}"><span>${esc(x.name)}${x.hidden ? '<small>hidden</small>' : ''}</span><button class="btn small" data-person="${i}">Edit</button></div>`).join('')}<button class="btn" id="addperson">Add person</button></div>
   <div class="card"><h2>Locations</h2>${locations.map(l => `<div class="kv ${l.hidden ? 'off' : ''}"><span>${esc(l.name)}${l.hidden ? '<small>hidden</small>' : ''}</span><button class="btn small" data-l="${l.id}">Edit</button></div>`).join('')}<button class="btn" id="addl">Add location</button></div>`;
@@ -56,9 +56,20 @@ export async function render(root) {
   $('#q', root).oninput = filter; filter();
 
   // ---- forms ----
-  const named = (table, title, item) => async () => {
-    const v = await askForm(title, [{ name: 'name', label: 'Name' }, { name: 'hidden', label: 'Hide (keeps history, removes from lists)', type: 'checkbox' }], item || {});
+  const named = (table, title, item, canDelete = true) => async () => {
+    const v = await askForm(title,
+      [{ name: 'name', label: 'Name' }, { name: 'hidden', label: 'Hide (keeps history, removes from lists)', type: 'checkbox' }],
+      item || {},
+      { extra: item && canDelete ? [['delete', 'Delete']] : [] });
     if (!v?.name) return;
+    if (v._action === 'delete') {
+      const c = await askForm(`Delete ${item.name}?`, [{ name: 'word', label: 'Type DELETE to confirm.' }], {}, { submit: 'Delete' });
+      if (c?.word !== 'DELETE') return;
+      await db[table].delete(item.id);
+      undoToast(`${item.name} deleted`, async () => { await db[table].put(item); rerender(); });
+      rerender();
+      return;
+    }
     await save(table, { ...(item || { id: slug(v.name) + '-' + uid().slice(0, 4), sort: 99 }), name: v.name, hidden: !!v.hidden }, `${v.name} saved`, rerender);
   };
 
@@ -70,7 +81,7 @@ export async function render(root) {
         <label><span>Price each</span><input name="unit" inputmode="decimal" value="${g ? dollars(g.unit) : ''}" placeholder="0.00"></label>
         <h4>Multi-buy deals</h4><div id="deals"></div><button type="button" class="btn small" data-a="add">Add a deal</button>
         <h4>Example</h4><div class="example" id="ex"></div>
-        <div class="row"><button type="button" class="btn ghost" data-a="cancel">Cancel</button><button class="btn primary">Save</button></div></form>`);
+        <div class="row"><button type="button" class="btn ghost" data-a="cancel">${g ? 'Cancel' : 'Cancel'}</button>${g ? '<button type="button" class="btn danger" data-a="delete">Delete</button>' : ''}<button class="btn primary">Save</button></div></form>`);
       const f = o.querySelector('form');
       const draw = () => {
         $('#deals', f).innerHTML = deals.map((d, i) => `<div class="dealrow"><input type="number" inputmode="numeric" min="2" data-q="${i}" value="${d.qty || ''}" aria-label="Quantity"> for $
@@ -92,6 +103,7 @@ export async function render(root) {
         if (a === 'add') { deals.push({ qty: 0, price: 0 }); draw(); }
         if (a === 'rm') { deals.splice(+e.target.dataset.i, 1); draw(); }
         if (a === 'cancel') { o.remove(); res(null); }
+        if (a === 'delete') { o.remove(); res({ _action: 'delete' }); }
       };
       f.onsubmit = e => { e.preventDefault(); if (!f.elements.name.value.trim()) return toast('Enter a name'); o.remove(); res({ name: f.elements.name.value.trim(), unit: toCents(f.elements.unit.value), deals: valid() }); };
       draw();
@@ -117,7 +129,8 @@ export async function render(root) {
     if (v._action === 'delete') return removeProduct(p);
     if (!v.name) return;
     const category = v.category === NEW ? v.newCategory.trim() : v.category;
-    const { label, ...raw } = p || {};
+    const raw = p ? { ...p } : null;
+    if (raw) delete raw.label;
     await save('products', { ...(p ? raw : { id: slug(category + '-' + v.name) + '-' + uid().slice(0, 4) }), name: v.name, category, type: v.type, group: v.group, price: v.price > 0 ? v.price : null, active: v.active }, `${v.name} saved`, rerender);
   }
 
@@ -145,16 +158,28 @@ export async function render(root) {
   async function renameCategory(old) {
     const v = await askForm('Rename sub-category', [{ name: 'name', label: 'New name' }], { name: old });
     if (!v?.name || v.name === old) return;
-    const prev = products.filter(p => p.category === old).map(({ label, ...p }) => p);
+    const prev = products.filter(p => p.category === old).map(p => {
+      const clean = { ...p };
+      delete clean.label;
+      return clean;
+    });
     await db.transaction('rw', db.products, async () => { for (const p of prev) await db.products.put({ ...p, category: v.name }); });
     undoToast(`Renamed to ${v.name}`, async () => { await db.transaction('rw', db.products, async () => { for (const p of prev) await db.products.put(p); }); rerender(); });
+    rerender();
+  }
+
+  async function deleteCategory(old) {
+    if (products.some(p => p.category === old)) return toast(`Rename or move the ${products.filter(p => p.category === old).length} products in ${old} before deleting it`, 5000);
+    const v = await askForm(`Delete sub-category ${old}?`, [{ name: 'word', label: 'Type DELETE to confirm.' }], {}, { submit: 'Delete sub-category' });
+    if (v?.word !== 'DELETE') return;
     rerender();
   }
 
   async function commitPrice(id, text) {
     const p = products.find(x => x.id === id), cents = toCents(text), next = text.trim() === '' || cents <= 0 ? null : cents;
     if ((p.price ?? null) === next) return rerender();
-    const { label, ...raw } = p;
+    const raw = { ...p };
+    delete raw.label;
     await save('products', { ...raw, price: next }, `${p.name}: ${next == null ? 'back to group price' : money(next)}`, rerender);
   }
 
@@ -174,11 +199,32 @@ export async function render(root) {
     if (b.id === 'addp') return addProduct();
     if (d.g || b.id === 'addg') {
       const g = d.g ? gmap[d.g] : null, v = await groupForm(g); if (!v) return;
+      if (v._action === 'delete') {
+        if (products.some(p => p.group === g.id)) return toast('Rename or move the products in this pricing group before deleting it', 5000);
+        const c = await askForm(`Delete ${g.name}?`, [{ name: 'word', label: 'Type DELETE to confirm.' }], {}, { submit: 'Delete group' });
+        if (c?.word !== 'DELETE') return;
+        await db.groups.delete(g.id);
+        undoToast(`${g.name} deleted`, async () => { await db.groups.put(g); rerender(); });
+        return rerender();
+      }
       return save('groups', { ...(g || { id: 'g-' + uid().slice(0, 8), sort: 99 }), ...v }, `${v.name} saved`, rerender);
     }
     if (d.person != null || b.id === 'addperson') {
       const i = d.person != null ? +d.person : -1, cur = people[i];
-      const v = await askForm(cur ? 'Edit person' : 'Add person', [{ name: 'name', label: 'Name' }, { name: 'hidden', label: 'Hide (keeps past days)', type: 'checkbox' }], cur || {});
+      const v = await askForm(cur ? 'Edit person' : 'Add person',
+        [{ name: 'name', label: 'Name' }, { name: 'hidden', label: 'Hide (keeps past days)', type: 'checkbox' }],
+        cur || {},
+        { extra: cur ? [['delete', 'Delete']] : [] });
+      if (v?._action === 'delete') {
+        const used = (await db.marketDays.toArray()).some(day => (day.staff || []).some(p => p.name === cur.name));
+        if (used) return toast('This person appears in past market days. Hide the person instead of deleting it.', 5000);
+        const c = await askForm(`Delete ${cur.name}?`, [{ name: 'word', label: 'Type DELETE to confirm.' }], {}, { submit: 'Delete person' });
+        if (c?.word !== 'DELETE') return;
+        const before = JSON.stringify(people);
+        await setPeople(people.filter((_, k) => k !== i));
+        undoToast(`${cur.name} deleted`, async () => { await setPeople(JSON.parse(before)); rerender(); });
+        return rerender();
+      }
       if (!v?.name) return;
       const before = JSON.stringify(people), days = (await db.marketDays.toArray()).filter(x => cur && (x.staff || []).some(s => s.name === cur.name));
       const next = cur ? people.map((x, k) => (k === i ? { name: v.name, hidden: !!v.hidden } : x)) : [...people, { name: v.name }];
@@ -188,7 +234,20 @@ export async function render(root) {
       return rerender();
     }
     if (d.cat) return renameCategory(d.cat);
-    if (d.t || b.id === 'addt') return named('types', d.t ? 'Edit type' : 'New type', d.t ? tmap[d.t] : null)();
-    if (d.l || b.id === 'addl') return named('locations', d.l ? 'Edit location' : 'New location', d.l ? cat.lmap[d.l] : null)();
+    if (d.catDelete) return deleteCategory(d.catDelete);
+    if (d.t || b.id === 'addt') {
+      const item = d.t ? tmap[d.t] : null;
+      const canDelete = item ? !products.some(p => p.type === item.id) : true;
+      return named('types', item ? 'Edit type' : 'New type', item, canDelete)();
+    }
+    if (d.l || b.id === 'addl') {
+      const item = d.l ? cat.lmap[d.l] : null;
+      const used = item ? (await db.marketDays.where('location').equals(item.id).count()) > 0 ||
+        (await db.stock.where('locationId').equals(item.id).count()) > 0 ||
+        (await db.orders.where('locationId').equals(item.id).count()) > 0 ||
+        (await db.losses.where('locationId').equals(item.id).count()) > 0 ||
+        (await db.packing.toArray()).some(p => p.id.startsWith(item.id + '|')) : false;
+      return named('locations', item ? 'Edit location' : 'New location', item, item ? !used : true)();
+    }
   };
 }

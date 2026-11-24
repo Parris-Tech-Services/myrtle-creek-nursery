@@ -23,8 +23,11 @@ async function chip() {
 async function banners() {
   const items = [];   // most urgent first
   const [lastSync, lastBackup, closed] = [await getSetting('lastSync', 0), await getSetting('lastBackup', 0), await db.marketDays.where('status').equals('closed').toArray()];
-  if (backupOverdue(closed.map(d => d.closedAt || 0), lastSync, lastBackup)) items.push({ cls: 'red', href: '#settings', t: 'More than 2 market days are not backed up. Back up now.' });
-  if (await settings.backupDue()) items.push({ href: '#settings', t: 'A market day closed since your last backup. Tap to back up.' });
+  if (backupOverdue(closed.map(d => d.closedAt || 0), lastSync, lastBackup)) {
+    items.push({ cls: 'red', href: '#settings', t: 'Backup overdue: more than 2 market days are not backed up. Back up now.' });
+  } else if (await settings.backupDue()) {
+    items.push({ href: '#settings', t: 'A market day closed since the last backup. Tap to back up.' });
+  }
   if (waitingWorker) items.push((await openDay()) ? { t: 'Update ready. It installs after you close the market day.' } : { t: 'Update ready. <button class="btn small" id="install">Install update</button>' });
   if (!(navigator.standalone || matchMedia('(display-mode: standalone)').matches)) items.push({ href: '#settings', t: 'Open this from the Home Screen icon, not Safari, so your data is not cleared.' });
   if (navigator.storage?.persisted && !(await navigator.storage.persisted())) items.push({ href: '#settings', t: 'Storage is not protected from clearing.' });

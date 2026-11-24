@@ -1,7 +1,7 @@
 import { db, getSetting } from './db.js';
-import { exportBackup, importBackup, salesCsv, ordersCsv, cashCsv, daysCsv, deliverFile, restoreSnapshot } from './sync.js';
+import { exportBackup, importBackup, restoreSnapshot } from './sync.js';
 import { getConn, connect, disconnect, flush, pending, remoteCounts, localCounts, restoreFromSheet, syncStatus, scriptOutdated, resendAll } from './gsync.js';
-import { esc, fmtDateTime, ymd, $ } from './util.js';
+import { esc, fmtDateTime, $ } from './util.js';
 import { toast, confirmBox, choose, overlay, notice, askForm } from './ui.js';
 import { listSnapshots, snapshotLabels } from './safety.js';
 import { replaceGuard } from './backup.js';
@@ -21,8 +21,8 @@ export async function render(root) {
   root.innerHTML = `<div class="card"><h2>Backup</h2>
     <div class="kv"><span>Last backup</span><b>${fmtDateTime(await getSetting('lastBackup'))}</b></div>
     ${await backupDue() ? '<p class="warn-text">A market day has been closed since your last backup.</p>' : ''}
-    <button class="btn primary big" id="exp">Export full backup (JSON)</button>
-    <div class="row"><button class="btn" id="csv">Export sales (CSV)</button><button class="btn" id="ocsv">Export orders (CSV)</button><button class="btn" id="ccsv">Export cash counts (CSV)</button><button class="btn" id="dcsv">Export market days (CSV)</button></div>
+    <button class="btn primary big" id="backup-all">Backup everything</button>
+    <p class="muted">Downloads one complete backup file containing every record.</p>
     <h3>Restore or combine</h3>
     <p class="muted">Restore replaces everything on this device. Merge adds another device's file, matching by id so nothing doubles up.</p>
     <input type="file" id="file" accept=".json,application/json" hidden>
@@ -48,12 +48,8 @@ export async function render(root) {
   let mode = 'merge';
   root.onclick = async e => {
     const b = e.target.closest('button'); if (!b) return;
-    if (b.id === 'exp') { (await exportBackup()) ? toast('Backup saved') : toast('Backup cancelled'); return render(root); }
-    if (b.id === 'dcsv') return deliverFile(new Blob([await daysCsv()], { type: 'text/csv' }), `myrtle-creek-days-${ymd()}.csv`);
-    if (b.id === 'ccsv') return deliverFile(new Blob([await cashCsv()], { type: 'text/csv' }), `myrtle-creek-cash-${ymd()}.csv`);
-    if (b.id === 'ocsv') return deliverFile(new Blob([await ordersCsv()], { type: 'text/csv' }), `myrtle-creek-orders-${ymd()}.csv`);
+    if (b.id === 'backup-all') { (await exportBackup()) ? toast('Complete backup downloaded') : toast('Backup cancelled'); return render(root); }
     if (b.dataset.snap) { if (await confirmBox('Replace all current data with this snapshot?', 'Restore', true)) { try { await restoreSnapshot(b.dataset.snap); location.reload(); } catch (err) { await notice('Could not restore', err.message); } } return; }
-    if (b.id === 'csv') return deliverFile(new Blob([await salesCsv()], { type: 'text/csv' }), `myrtle-creek-sales-${ymd()}.csv`);
     if (b.id === 'restore' || b.id === 'merge') { mode = b.id; if (mode === 'restore' && !await confirmBox('Restore will REPLACE all data on this device with the file. Continue?', 'Continue', true)) return; $('#file').click(); }
     if (b.id === 'sync') { if (syncStatus.busy) { toast('Already syncing. This can take a minute the first time.', 4000); return; } const r = await flush({ force: true }); toast(r.error ? 'Sync error: ' + r.error : navigator.onLine ? `Synced (${r.sent} sent)` : 'No signal. It will sync when you are back online.', 4000); return render(root); }
     if (b.id === 'connect') {
@@ -102,7 +98,7 @@ function updateDialog() {
     <li>Click in the code, select all, and <b>paste</b> the new script over it. Click <b>Save</b>.</li>
     <li>Click <b>Deploy</b>, then <b>Manage deployments</b>.</li>
     <li>Click the pencil (edit) icon. Under <b>Version</b> choose <b>New version</b>, then <b>Deploy</b>.</li>
-    <li>Back in the app, tap <b>Sync now</b>.</li></ol>
+    <li>Back in the app, tap <b>Sync now</b>, then <b>Resend everything</b> so existing sales create the <b>Sale lines</b> tab.</li></ol>
     <button class="btn ghost" id="closeupdate">Close</button>`);
   o.onclick = async e => {
     const b = e.target.closest('button'); if (!b) return;

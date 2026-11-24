@@ -26,6 +26,8 @@ const collectOrder = o => guard('collect:' + o.id, async () => {
       await takePaymentDb(fresh.id, { amount: balance(fresh), method: m });
     }
   }
+  const items = fresh.lines.map(l => `${l.qty} x ${l.name || l.productId}`).join(', ');
+  if (!await confirmBox(`Collect ${fresh.customer}'s order?\n${items}\nStock will leave the nursery or loaded market stock accordingly.`, 'Confirm collection')) return false;
   const r = await collectDb(fresh.id);
   if (!r.ok) return false;
   flush();
@@ -117,12 +119,30 @@ export async function render(root) {
       ${o.status !== 'cancelled' && balance(o) > 0 ? `<button class="btn small" data-pay="${o.id}">Take payment</button>` : ''}
       ${o.status === 'held' ? `<button class="btn small ghost" data-e="${o.id}">Edit</button><button class="btn small ghost" data-x="${o.id}">Cancel order</button>` : ''}
       ${o.status === 'collected' ? `<button class="btn small ghost" data-u="${o.id}">Undo collection</button>` : ''}
+      <button class="btn small ghost" data-delete-order="${o.id}">Delete</button>
       ${o.status === 'cancelled' && paidTotal(o) && !o.refunded ? `<button class="btn small" data-rf="${o.id}">Mark refunded</button>` : ''}</div></div>`).join('') || `<div class="card empty"><h2>No orders yet</h2><p>Orders hold plants for a customer until they collect them.</p><button class="btn primary" id="new2">New order</button></div>`}`;
   root.onclick = async e => {
     const b = e.target.closest('button'); if (!b) return; const d = b.dataset, get = id => db.orders.get(id);
     if (d.f) { filter = d.f; return render(root); }
     if (b.id === 'new' || b.id === 'new2') await orderForm();
     else if (d.e) await orderForm(await get(d.e));
+    else if (d.deleteOrder) {
+      const o = await get(d.deleteOrder);
+      if (!o) return;
+      if (o.status === 'held' && paidTotal(o) > 0) return toast('Refund or settle this prepaid order before deleting it', 5000);
+      if (o.status === 'cancelled' && paidTotal(o) > 0 && !o.refunded) return toast('Mark this cancelled order refunded before deleting it', 5000);
+      const v = await askForm(`Delete ${o.customer}'s order?`, [{ name: 'word', label: 'Type DELETE to confirm.' }], {}, { submit: 'Delete order' });
+      if (v?.word !== 'DELETE') return;
+      if (o.status === 'collected') await uncollect(o.id);
+      await db.orders.delete(o.id);
+      undoToast('Order deleted', async () => {
+        if (o.status === 'collected') {
+          await db.orders.put({ ...o, status: 'held', collectedAt: null, collectedDate: null, collectedDayId: null, collectedSaleId: null, stockFrom: null });
+          await collectDb(o.id);
+        } else await db.orders.put(o);
+        render(root);
+      });
+    }
     else if (d.c) await collectOrder(await get(d.c));
     else if (d.u) { if (await confirmBox('Undo this collection? The sale is voided and stock restored.', 'Undo collection', true)) { await uncollect(d.u); toast('Collection undone'); } }
     else if (d.pay) {

@@ -27,7 +27,7 @@ An order has a customer, items, a handover (market, Pambula pickup or delivery),
 **Prices** tab: pricing groups (price and multi-buy deals such as "4 for 15"), types, products (own price for trees), sub-categories (rename once, all products follow), people and locations. Each sale keeps the price it was sold at, so later changes never alter old sales.
 
 ## Backups
-- **Backup -> Export full backup** after every market: save to Files or Drive, email it, or AirDrop it. The file is sealed with counts and a checksum, and leaves out this device's Google Sheet connection.
+- Use the Google Sheet for the full backup after every market. CSV exports for sale lines, orders, cash counts and market days are available under Reports.
 - **Restore** replaces everything; **Merge another file** combines devices, and for each record the newer change wins (a record with no date counts as older). A file that is cut short, damaged or missing parts is rejected before anything changes, with a clear message.
 - The app keeps its last 5 automatic snapshots in a separate store that restores never touch, and takes one before every import. CSV exports are there too.
 - Banners warn when a day has closed since the last backup, and turn red after more than 2 unbacked-up days.
@@ -68,3 +68,9 @@ Owner's one-time template: create an empty Google Sheet, **Extensions -> Apps Sc
 
 ## For developers
 Plain HTML, CSS and JavaScript modules, no build step. Libraries are in `vendor/` (Dexie, PapaParse) and the title font Bagel Fat One (SIL Open Font License, `vendor/OFL-bagel-fat-one.txt`). Run the tests with `node --test tests/*.test.mjs`. Serve with `Cache-Control: no-store` while developing.
+
+## Quality checks
+- `npm ci`
+- `npm run check` - JavaScript lint and unit/integration tests
+- `npm run test:browser` - Playwright browser checks
+- `npm run version:bump -- mcn-v26` - keep the service-worker and app versions in step

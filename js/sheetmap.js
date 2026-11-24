@@ -13,6 +13,7 @@ export const TABS = {
   'Sales': T(['Date', 'date'], ['Time', 'time'], ['Market', 'text'], ['Items', 'text'], ['Units', 'num'], ['Total', 'money'], ['Deal savings', 'money'], ['Payment', 'text'], ['Cash given', 'money'], ['Change', 'money'], ['Rounding', 'money'], ['Voided', 'text']),
   'Market days': T(['Date', 'date'], ['Market', 'text'], ['Status', 'text'], ['Weather', 'text'], ['Crowd (1-5)', 'num'], ['Set-up', 'time'], ['Pack-up', 'time'], ['People', 'text'], ['Person-hours', 'dec'], ['Opening float', 'money'], ['Cash counted', 'money'], ['Kept for next market', 'money'], ['Banked', 'money'], ['Notes', 'text']),
   'Cash counts': [...T(['Date', 'date'], ['Market', 'text'], ['Opening float', 'money'], ['Cash it should be', 'money'], ['Cash counted', 'money'], ['Over / short', 'money'], ['Kept for next market', 'money'], ['Banked', 'money']), ...denomCols],
+  'Sale lines': T(['Sale', 'text'], ['Date', 'date'], ['Time', 'time'], ['Market', 'text'], ['Product', 'text'], ['Type', 'text'], ['Sub-category', 'text'], ['Quantity', 'num'], ['Unit price', 'money'], ['Line type', 'text'], ['Line total', 'money'], ['Note', 'text'], ['Voided', 'text']),
   'Expenses & cash out': T(['Date', 'date'], ['Market', 'text'], ['Type', 'text'], ['Category', 'text'], ['Amount', 'money'], ['Paid from', 'text'], ['Note', 'text']),
   'Orders': T(['Customer', 'text'], ['Due', 'date'], ['Status', 'text'], ['Payment', 'text'], ['Total', 'money'], ['Paid', 'money'], ['Handover', 'text'], ['Market', 'text'], ['Items', 'text'], ['Phone', 'text'], ['Address', 'text'], ['Collected on', 'date'], ['Notes', 'text']),
   'Losses': T(['Date', 'date'], ['Market', 'text'], ['Product', 'text'], ['Quantity', 'num'], ['Reason', 'text'], ['Value', 'money'], ['Note', 'text']),
@@ -26,7 +27,7 @@ export const TABS = {
 
 /** Readable tabs to clear a record from when it is deleted. Types, locations, settings and packing have no tab (they live only in _data). */
 export const TABS_OF_STORE = {
-  sales: ['Sales'], marketDays: ['Market days', 'Cash counts'], cashMovements: ['Expenses & cash out'], orders: ['Orders'], losses: ['Losses'], dayStock: ['Stock taken & returned'],
+  sales: ['Sales', 'Sale lines'], marketDays: ['Market days', 'Cash counts'], cashMovements: ['Expenses & cash out'], orders: ['Orders'], losses: ['Losses'], dayStock: ['Stock taken & returned'],
   soldOut: ['Sold out'], stock: ['Nursery stock'], batches: ['Growing batches'], products: ['Products & prices'], groups: ['Products & prices'],
 };
 export const tabDefs = names => Object.fromEntries(names.map(n => [n, TABS[n]]));
@@ -52,8 +53,17 @@ export function rowsFor(store, rec, ctx) {
   const id = `${store}:${rec.id ?? rec.key}`, day = ctx.days?.[rec.marketDayId], date = day?.date || '';
   const one = (tab, cells) => ({ rows: [{ tab, id, cells }] });
   switch (store) {
-    case 'sales': return one('Sales', [date, hhmm(rec.timestamp), ctx.loc(day?.location), rec.lines.map(l => `${l.qty} x ${ctx.pn(l.productId, l)}${l.lineType && l.lineType !== 'normal' ? ' (' + l.lineType + ')' : ''}`).join('; '),
-      rec.lines.reduce((t, l) => t + l.qty, 0), $(rec.total), $(rec.dealSavings), PAY[rec.paymentMethod] || rec.paymentMethod, $(rec.cashTendered), $(rec.changeGiven), $(rec.rounding), yes(rec.voided)]);
+    case 'sales': {
+      const saleRow = { tab: 'Sales', id, cells: [date, hhmm(rec.timestamp), ctx.loc(day?.location), rec.lines.map(l => `${l.qty} x ${ctx.pn(l.productId, l)}${l.lineType && l.lineType !== 'normal' ? ' (' + l.lineType + ')' : ''}`).join('; '),
+        rec.lines.reduce((t, l) => t + l.qty, 0), $(rec.total), $(rec.dealSavings), PAY[rec.paymentMethod] || rec.paymentMethod, $(rec.cashTendered), $(rec.changeGiven), $(rec.rounding), yes(rec.voided)] };
+      const lines = rec.lines.map((l, i) => {
+        const p = ctx.pmap?.[l.productId] || {};
+        const lineName = ctx.pn(l.productId, l);
+        return { tab: 'Sale lines', id: `${id}:${i + 1}`, cells: [rec.id, date, hhmm(rec.timestamp), ctx.loc(day?.location), lineName,
+          ctx.tmap?.[p.type]?.name || p.type || '', p.category || '', l.qty, $(l.unitPrice), l.lineType || 'normal', $(l.qty * l.unitPrice), l.note || '', yes(rec.voided)] };
+      });
+      return { rows: [saleRow, ...lines] };
+    }
     case 'marketDays': {
       const c = ctx.cash || {}, rows = [{ tab: 'Market days', id, cells: [rec.date, ctx.loc(rec.location), STATUS[rec.status] || rec.status, rec.weather || '', rec.crowd || '', rec.setupTime || '', rec.packupTime || '',
         peopleText(rec), totalPersonHours(rec) || '', $(rec.float), $(rec.countedCash), $(rec.keepFloat), $(rec.banked), rec.notes || ''] }];

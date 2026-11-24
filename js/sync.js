@@ -129,3 +129,5 @@ export async function salesCsv(from = '', to = '') {
   }
   return window.Papa.unparse(rows.length ? rows : [{ saleId: '' }]);
 }
+
+export const saleLinesCsv = salesCsv;
