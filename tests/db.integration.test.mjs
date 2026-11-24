@@ -3,7 +3,7 @@ import test, { beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 
 const dbm = await import('../js/db.js');
-const { db, seedIfEmpty, adjustStock, catalog, packingPlan, nurseryStock, openDay, dayReceipts } = dbm;
+const { db, seedIfEmpty, adjustStock, catalog, packingPlan, nurseryStock, dayReceipts } = dbm;
 const { priceBasket } = await import('../js/pricing.js');
 const { unitPriceFor, dealsFor } = await import('../js/pricing.js');
 const sync = await import('../js/sync.js');
@@ -181,6 +181,29 @@ test('closing a day: oversold units come off nursery stock once, leftovers are r
   assert.equal((await db.marketDays.get('d1')).status, 'open');
 });
 
+test('deleting a market day reverses loaded and returned stock and can be undone', async () => {
+  await db.marketDays.put({ ...DAY });
+  await db.stock.put({ id: 'p1|nursery', productId: 'p1', locationId: 'nursery', qty: 20 });
+  await db.dayStock.put({ id: 'd1|p1', marketDayId: 'd1', productId: 'p1', taken: 10, returned: 4 });
+  await adjustStock('p1', -10);
+  await adjustStock('p1', 4);
+  await db.sales.put(sale('s1', 'p1', 3));
+  await db.losses.put({ id: 'l1', marketDayId: 'd1', productId: 'p1', qty: 1, reason: 'dead', unitPrice: 400, date: DAY.date, locationId: 'jamison' });
+
+  const snapshot = await close.deleteMarketDayDb('d1');
+  assert.ok(snapshot);
+  assert.equal(await db.marketDays.get('d1'), undefined);
+  assert.equal(await db.sales.count(), 0);
+  assert.equal(await db.losses.count(), 0);
+  assert.equal((await db.stock.get('p1|nursery')).qty, 20);
+
+  assert.equal(await close.restoreMarketDayDb(snapshot), true);
+  assert.ok(await db.marketDays.get('d1'));
+  assert.equal(await db.sales.count(), 1);
+  assert.equal(await db.losses.count(), 1);
+  assert.equal((await db.stock.get('p1|nursery')).qty, 14);
+});
+
 test('"use expected" also covers products that were sold but never loaded, so every product ends up with a count', async () => {
   await db.marketDays.put({ ...DAY });
   await db.sales.put(sale('s1', 'p9', 3));
@@ -188,6 +211,17 @@ test('"use expected" also covers products that were sold but never loaded, so ev
   const r = await db.dayStock.get('d1|p9');
   assert.deepEqual([r.taken, r.returned], [0, 0]);
   assert.equal(await close.useExpectedDb('d1'), 0);
+});
+
+test('coming-home assumptions do not change stock until verified', async () => {
+  await db.marketDays.put({ ...DAY });
+  await db.dayStock.put({ id: 'd1|p1', marketDayId: 'd1', productId: 'p1', taken: 10, returned: null });
+  await db.sales.put(sale('s1', 'p1', 3));
+  await db.stock.put({ id: 'p1|nursery', productId: 'p1', locationId: 'nursery', qty: 20 });
+  assert.equal(await close.assumeReturnedDb('d1'), 1);
+  let r = await db.dayStock.get('d1|p1');
+  assert.deepEqual([r.returned, r.returnedVerified, r.returnedAssumed], [7, false, true]);
+  assert.equal((await db.stock.get('p1|nursery')).qty, 20);
 });
 
 test('closing a day with leftovers: returned units go back and nothing extra is deducted', async () => {

@@ -7,7 +7,7 @@ import { APP_VERSION } from './version.js';
 import { rowsFor, tabDefs, TABS_OF_STORE } from './sheetmap.js';
 
 /** The Sheet's script must be at least this version for the app's sync to work (see SCRIPT_VERSION in apps-script.gs). */
-const REQUIRED_SCRIPT_VERSION = 1;
+const REQUIRED_SCRIPT_VERSION = 2;
 const status = { error: null, failures: 0, nextTry: 0, busy: false, pending: 0, scriptVersion: undefined };
 export const syncStatus = status;
 const notify = () => window.dispatchEvent(new Event('syncchange'));
@@ -26,7 +26,7 @@ export async function ackedSet() { const m = await stateMap(); return (store, re
 // What the readable Sheet tabs look like lives in sheetmap.js. Restore data always goes in _data as the full json record.
 async function buildItems(ops) {
   const cat = await catalog(), days = Object.fromEntries((await db.marketDays.toArray()).map(d => [d.id, d]));
-  const c = { days, gmap: cat.gmap, tmap: cat.tmap, loc: id => cat.lmap[id]?.name || id || '', pn: (id, l) => cat.pmap[id]?.label || l?.name || id };
+  const c = { days, pmap: cat.pmap, gmap: cat.gmap, tmap: cat.tmap, loc: id => cat.lmap[id]?.name || id || '', pn: (id, l) => cat.pmap[id]?.label || l?.name || id };
   const items = [], tabs = new Set();
   for (const op of ops) {
     const base = { key: op.key, store: op.store, id: op.id, updatedAt: op.updatedAt };

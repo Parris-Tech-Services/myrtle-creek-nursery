@@ -26,6 +26,8 @@ const collectOrder = o => guard('collect:' + o.id, async () => {
       await takePaymentDb(fresh.id, { amount: balance(fresh), method: m });
     }
   }
+  const items = fresh.lines.map(l => `${l.qty} x ${l.name || l.productId}`).join(', ');
+  if (!await confirmBox(`Collect ${fresh.customer}'s order?\n${items}\nStock will leave the nursery or loaded market stock accordingly.`, 'Confirm collection')) return false;
   const r = await collectDb(fresh.id);
   if (!r.ok) return false;
   flush();

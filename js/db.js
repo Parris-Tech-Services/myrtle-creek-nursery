@@ -169,12 +169,12 @@ export async function packingPlan(locId, forDate = ymd()) {
   const held = reservedByProduct(await db.orders.toArray(), locId);
   const all = await loadVisits(null), here = all.filter(v => v.location === locId);
   const stats = productStats(here.slice(0, 3)), ever = productStats(here), statsAll = productStats(all.slice(0, 6));
-  const edits = Object.fromEntries((await db.packing.toArray()).filter(p => p.id.startsWith(locId + '|') && p.date === forDate).map(p => [p.id, p.qty]));
+  const edits = Object.fromEntries((await db.packing.toArray()).filter(p => p.id.startsWith(locId + '|') && p.date === forDate).map(p => [p.id, p]));
   return products.map(p => {
     const st = stats[p.id], lastSold = here[0]?.sold[p.id] || 0, lastTaken = here[0]?.taken[p.id] || 0, heldHere = held[p.id] || 0;
     const r = suggestQty({ stats: st, everThere: (ever[p.id]?.taken || 0) > 0 || (ever[p.id]?.sold || 0) > 0, fallback: statsAll[p.id], lastTaken, lastSold, held: heldHere, stock: Math.max(0, stock[p.id] || 0), defaultQty: all.length ? 0 : 4 });
-    const edited = edits[locId + '|' + p.id];
-    return { product: p, lastTaken, lastSold, avg: st?.avgSold || 0, soldOut: st?.soldOut ? st.avgSoldOutMin : null, soldOutVisits: st?.soldOut || 0, held: heldHere, suggested: r.qty, reason: r.reason, demand: r.demand, shortfall: r.shortfall, edited, qty: edited ?? r.qty, nursery: stock[p.id] || 0, visits: here.slice(0, 3).length };
+    const edit = edits[locId + '|' + p.id], edited = edit?.qty;
+    return { product: p, lastTaken, lastSold, avg: st?.avgSold || 0, soldOut: st?.soldOut ? st.avgSoldOutMin : null, soldOutVisits: st?.soldOut || 0, held: heldHere, suggested: r.qty, reason: r.reason, demand: r.demand, shortfall: r.shortfall, edited, qty: edited ?? r.qty, verified: edit?.verified === true, nursery: stock[p.id] || 0, visits: here.slice(0, 3).length };
   });
 }
 
@@ -200,7 +200,13 @@ export async function repairStrayMarkers() {
   try {
     for (const name of Object.keys(STORES)) {
       const dirty = (await db[name].toArray()).filter(r => '$types' in r || '$' in r);
-      for (const r of dirty) { const { $types, $, ...clean } = r; await db[name].put(clean); n++; }
+      for (const r of dirty) {
+        const clean = { ...r };
+        delete clean.$types;
+        delete clean.$;
+        await db[name].put(clean);
+        n++;
+      }
     }
     await setSetting('markersRepaired', true);
   } finally { stamping.on = true; }

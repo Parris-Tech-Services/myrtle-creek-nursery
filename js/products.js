@@ -117,7 +117,8 @@ export async function render(root) {
     if (v._action === 'delete') return removeProduct(p);
     if (!v.name) return;
     const category = v.category === NEW ? v.newCategory.trim() : v.category;
-    const { label, ...raw } = p || {};
+    const raw = p ? { ...p } : null;
+    if (raw) delete raw.label;
     await save('products', { ...(p ? raw : { id: slug(category + '-' + v.name) + '-' + uid().slice(0, 4) }), name: v.name, category, type: v.type, group: v.group, price: v.price > 0 ? v.price : null, active: v.active }, `${v.name} saved`, rerender);
   }
 
@@ -145,7 +146,11 @@ export async function render(root) {
   async function renameCategory(old) {
     const v = await askForm('Rename sub-category', [{ name: 'name', label: 'New name' }], { name: old });
     if (!v?.name || v.name === old) return;
-    const prev = products.filter(p => p.category === old).map(({ label, ...p }) => p);
+    const prev = products.filter(p => p.category === old).map(p => {
+      const clean = { ...p };
+      delete clean.label;
+      return clean;
+    });
     await db.transaction('rw', db.products, async () => { for (const p of prev) await db.products.put({ ...p, category: v.name }); });
     undoToast(`Renamed to ${v.name}`, async () => { await db.transaction('rw', db.products, async () => { for (const p of prev) await db.products.put(p); }); rerender(); });
     rerender();
@@ -154,7 +159,8 @@ export async function render(root) {
   async function commitPrice(id, text) {
     const p = products.find(x => x.id === id), cents = toCents(text), next = text.trim() === '' || cents <= 0 ? null : cents;
     if ((p.price ?? null) === next) return rerender();
-    const { label, ...raw } = p;
+    const raw = { ...p };
+    delete raw.label;
     await save('products', { ...raw, price: next }, `${p.name}: ${next == null ? 'back to group price' : money(next)}`, rerender);
   }
 

@@ -1,0 +1,20 @@
+{
+  "name": "myrtle-creek-nursery",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "test:browser": "playwright test",
+    "lint": "eslint js sw.js scripts tests/*.mjs",
+    "check": "npm run lint && npm test",
+    "version:bump": "node scripts/bump-version.mjs"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.39.1",
+    "@playwright/test": "1.56.1",
+    "eslint": "9.39.1",
+    "globals": "16.5.0",
+    "dexie": "4.0.10",
+    "fake-indexeddb": "6.0.0"
+  }
+}
