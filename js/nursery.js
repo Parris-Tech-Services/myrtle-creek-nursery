@@ -1,6 +1,6 @@
 import { db, catalog, adjustStock, nurseryStock, nurseryNeeds } from './db.js';
 import { esc, uid, ymd, fmtDate, groupBy, clampQty } from './util.js';
-import { askForm, undoToast, guard } from './ui.js';
+import { askForm, undoToast, guard, confirmBox } from './ui.js';
 import { reservedByProduct } from './orders.js';
 import { recordLoss } from './market.js';
 
@@ -25,7 +25,8 @@ export async function render(root) {
     { name: 'productId', label: 'Variety', type: 'select', options: products.map(p => [p.id, p.label]) },
     { name: 'method', label: 'Sown or potted', type: 'select', options: [['sown', 'Sown'], ['potted', 'Potted']] },
     { name: 'startDate', label: 'Date', type: 'date' }, { name: 'qtyStarted', label: 'Quantity started', type: 'number', min: 1 },
-    { name: 'expectedReady', label: 'Expected ready', type: 'date' }, { name: 'notes', label: 'Notes' }], b);
+    { name: 'expectedReady', label: 'Expected ready', type: 'date' }, { name: 'notes', label: 'Notes' }], b,
+    b.id ? { extra: [['delete', 'Delete batch']] } : {});
 
   root.onclick = async e => {
     const b = e.target.closest('button'); if (!b) return;
@@ -46,6 +47,12 @@ export async function render(root) {
     const batch = await db.batches.get(d.loss || d.ready || d.edit);
     if (d.edit) {
       const v = await batchForm('Edit batch', batch); if (!v) return;
+      if (v._action === 'delete') {
+        if (!await confirmBox(`Delete this growing batch?${batch.moved ? ' Plants already moved to stock will stay in stock.' : ''}`, 'Delete batch', true)) return;
+        await db.batches.delete(batch.id);
+        undoToast('Batch deleted', async () => { await db.batches.put(batch); render(root); });
+        return render(root);
+      }
       await db.batches.update(batch.id, v); return render(root);
     }
     const rem = batch.qtyStarted - (batch.losses || 0) - (batch.moved || 0);
