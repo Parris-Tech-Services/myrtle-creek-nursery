@@ -3,7 +3,7 @@ import test, { beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 
 const dbm = await import('../js/db.js');
-const { db, seedIfEmpty, adjustStock, catalog, packingPlan, nurseryStock, dayReceipts } = dbm;
+const { db, seedIfEmpty, adjustStock, catalog, packingPlan, nurseryStock, dayReceipts, markets } = dbm;
 const { priceBasket } = await import('../js/pricing.js');
 const { unitPriceFor, dealsFor } = await import('../js/pricing.js');
 const sync = await import('../js/sync.js');
@@ -17,6 +17,14 @@ beforeEach(() => resetDb(db));
 
 const DAY = { id: 'd1', date: '2026-12-01', location: 'jamison', status: 'open', float: 5000 };
 const sale = (id, productId, qty, extra = {}) => ({ id, marketDayId: 'd1', timestamp: 1, lines: [{ productId, qty, unitPrice: 400, lineType: 'normal' }], total: qty * 400, dealSavings: 0, paymentMethod: 'card', payments: [{ method: 'card', amount: qty * 400 }], voided: false, ...extra });
+
+test('a custom location is available in the catalog and market lists', async () => {
+  await seedIfEmpty();
+  await db.locations.put({ id: 'custom-market', name: 'Custom Market', hidden: false });
+  const cat = await catalog();
+  assert.equal(cat.lmap['custom-market'].name, 'Custom Market');
+  assert.ok(markets(cat.locations).some(l => l.id === 'custom-market'));
+});
 
 test('seed: no sample trees and no nursery stock; 5 mixed punnets cost $20 and 4+5 mixed seedlings and punnets $35', async () => {
   await seedIfEmpty();

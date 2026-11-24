@@ -1,7 +1,8 @@
 import { db, catalog, markets, packingPlan, openDay } from './db.js';
-import { esc, groupBy, ymd, clampQty, $, $$ } from './util.js';
+import { esc, groupBy, ymd, clampQty, uid, $, $$ } from './util.js';
 import { showPostDialog } from './postview.js';
 import { clock } from './insights.js';
+import { askForm, toast } from './ui.js';
 
 let loc = null;
 export async function render(root) {
@@ -11,6 +12,7 @@ export async function render(root) {
   const plan = await packingPlan(loc), g = groupBy(plan, r => r.product.type);
   root.innerHTML = `<div class="card"><h2>Packing list</h2><button class="btn primary" id="post">Make a post</button><button class="btn" id="takeall">Take all nursery stock</button>
     <label class="kv"><span>Location</span><select id="loc">${m.map(l => `<option value="${l.id}" ${l.id === loc ? 'selected' : ''}>${esc(l.name)}</option>`).join('')}</select></label>
+    <button class="btn small" id="addloc">Add location</button>
     <p class="muted">Based on ${plan[0]?.visits || 0} closed visit(s). Suggested quantities come from this market's last 3 visits (% sold and sold-out times), plus held orders, capped by nursery stock; the grey line says why. Type in the Pack column to change today's quantity only; clear it to go back to the suggestion. This feeds Load stock.</p>
     <div class="row"><button class="btn" id="verifyall">Verify all quantities</button></div>
     <table class="t"><tr><th>Product</th><th>Last taken</th><th>Last sold</th><th>Avg sold (3)</th><th>Held orders</th><th>Sold out</th><th>Nursery</th><th>Pack</th><th>Verified</th></tr>
@@ -18,6 +20,17 @@ export async function render(root) {
       <td>${r.avg.toFixed(1)}</td><td>${r.held || ''}</td><td>${r.soldOut != null ? clock(r.soldOut) : ''}</td>      <td>${r.nursery}</td><td><input class="num" type="number" inputmode="numeric" min="0" data-p="${r.product.id}" placeholder="${r.suggested}" value="${r.edited ?? ''}"></td>
       <td><label class="chk"><input type="checkbox" data-v="${r.product.id}" ${r.verified ? 'checked' : ''} aria-label="Verified ${esc(r.product.label)}"></label></td></tr>`).join('')}`).join('')}</table></div>`;
   $('#post', root).onclick = () => showPostDialog(loc);
+  $('#addloc', root).onclick = async () => {
+    const v = await askForm('Add packing location', [
+      { name: 'name', label: 'Location name' }
+    ], {}, { submit: 'Add location' });
+    if (!v?.name) return;
+    const id = 'loc-' + uid().slice(0, 8);
+    await db.locations.put({ id, name: v.name.trim(), hidden: false });
+    loc = id;
+    toast('Location added');
+    render(root);
+  };
   $('#takeall', root).onclick = async () => {   // today's quantities: everything the nursery has
     const today = ymd();
     await db.packing.bulkPut(plan.filter(r => r.nursery > 0).map(r => ({ id: loc + '|' + r.product.id, qty: clampQty(r.nursery), date: today, verified: false })));
